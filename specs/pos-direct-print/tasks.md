@@ -357,7 +357,9 @@ Milestone A siap untuk **AI coding agent Batch A1** karena seluruh poin berikut 
 
 Seluruh keputusan di atas final untuk implementasi Milestone A. AI coding agent tidak boleh mengubahnya diam-diam. Jika implementasi menemukan konflik atau ambiguity, agent wajib berhenti dan melaporkannya sebagai architecture decision/change request.
 
-Handoff berikutnya hanya mengizinkan **planning A1-01**. Planning tersebut tidak mengizinkan coding, perubahan schema/database, migration, build, commit, push, atau pengerjaan A1-02 dan task lain. Implementasi A1-01 baru boleh dimulai setelah user menyetujui plan secara eksplisit.
+Handoff berikutnya mengizinkan **implementasi A1-01 saja**. Design, scope, requirements, dan implementation direction A1-01 sudah disetujui; AI coding agent tidak perlu membuat atau menunggu persetujuan implementation plan tambahan. Agent wajib membaca dokumen terkait dan memeriksa pola Frappe v16 yang relevan, lalu langsung mengimplementasikan A1-01 beserta focused automated tests dan verifikasi yang diwajibkan `AGENTS.md`.
+
+Handoff ini tidak mengizinkan A1-02 atau task lain, perubahan terhadap frozen specification, pekerjaan Milestone B/C/D, commit, atau push. Jika ditemukan konflik material atau ambiguity yang tidak dapat diselesaikan dari frozen specification dan pola Frappe v16, agent wajib berhenti dan melaporkannya tanpa menebak keputusan desain. Setelah A1-01 selesai dan diverifikasi, agent wajib berhenti dan menunggu instruksi user berikutnya.
 
 ## Recommended Design Freeze — A.30
 
