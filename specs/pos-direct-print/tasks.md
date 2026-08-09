@@ -341,21 +341,23 @@ Setiap task di bawah membawa larangan eksplisit yang sama:
 
 ## Final Checklist — Milestone A Handoff Gate
 
-Milestone A hanya siap untuk **AI coding agent Batch A1** jika seluruh poin berikut dicentang:
+Milestone A siap untuk **AI coding agent Batch A1** karena seluruh poin berikut telah disetujui:
 
-- [ ] Seluruh A-OD-01 sampai A-OD-15 sudah diputuskan: **DECIDED — accepted default**.
-- [ ] Nama empat DocType diterima final.
-- [ ] State names diterima final.
-- [ ] Error-code prefix diterima final.
-- [ ] Identifier convention diterima final.
-- [ ] Idempotency semantics diterima final.
-- [ ] Reprint semantics diterima final.
-- [ ] Browser fallback semantics diterima final.
-- [ ] AI coding agent diinstruksikan tidak mengimplementasikan iMin SDK pada Milestone A.
-- [ ] Permission model untuk keempat custom DocType sudah didefinisikan, diterima final, dan mencakup role-level permission, field-level sensitivity, row-level Company/POS Profile restriction, audit immutability, serta REPRINT authority.
-- [ ] Permission model A.31 sudah **design-frozen**; tanpa ini Milestone A tidak boleh ditandai ready untuk Batch A1.
+- [x] Seluruh A-OD-01 sampai A-OD-15 sudah diputuskan: **DECIDED — accepted default**.
+- [x] Nama empat DocType diterima final.
+- [x] State names diterima final.
+- [x] Error-code prefix diterima final.
+- [x] Identifier convention diterima final.
+- [x] Idempotency semantics diterima final.
+- [x] Reprint semantics diterima final.
+- [x] Browser fallback semantics diterima final.
+- [x] AI coding agent diinstruksikan tidak mengimplementasikan iMin SDK pada Milestone A.
+- [x] Permission model untuk keempat custom DocType sudah didefinisikan, diterima final, dan mencakup role-level permission, field-level sensitivity, row-level Company/POS Profile restriction, audit immutability, serta REPRINT authority.
+- [x] Permission model A.31 sudah **design-frozen**.
 
-Setelah design freeze, keputusan tidak boleh diubah diam-diam oleh AI coding agent. Perubahan harus kembali menjadi architecture decision/change request.
+Seluruh keputusan di atas final untuk implementasi Milestone A. AI coding agent tidak boleh mengubahnya diam-diam. Jika implementasi menemukan konflik atau ambiguity, agent wajib berhenti dan melaporkannya sebagai architecture decision/change request.
+
+Handoff berikutnya hanya mengizinkan **planning A1-01**. Planning tersebut tidak mengizinkan coding, perubahan schema/database, migration, build, commit, push, atau pengerjaan A1-02 dan task lain. Implementasi A1-01 baru boleh dimulai setelah user menyetujui plan secara eksplisit.
 
 ## Recommended Design Freeze — A.30
 
