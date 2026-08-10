@@ -8,8 +8,16 @@ Custom Frappe app (branch `version-16`) untuk direct thermal printing dari POS E
 2. Kerjakan **HANYA** task yang diberikan secara eksplisit pada sesi berjalan dari `specs/pos-direct-print/tasks.md`. Otorisasi selalu mengikuti handoff terakhir di file itu (saat ini: **A1-01 saja**). Task dalam satu Batch boleh berurutan, tetapi transisi antar-Batch (A1 → A2 → A3) wajib menunggu review dan persetujuan eksplisit user.
 3. **JANGAN** mengedit file di luar `apps/pos_direct_print/`. Semua extension harus melalui custom app ini; jangan patch ERPNext core, Frappe core, atau compiled asset ERPNext.
 4. Jika menemukan konflik atau ambiguitas yang tidak bisa diselesaikan dari frozen spec + pola Frappe v16, **berhenti dan laporkan** sebagai change request — jangan menebak keputusan desain.
-5. Ikuti konvensi di `.agents/skills/code-style/` (skills Frappe lain, termasuk `frappe-app-dev`, ada di direktori yang sama). Ringkasan arsitektur, DocType, dan invarian domain ada di `CLAUDE.md`.
+5. Baca dan pakai skills di `.agents/skills/` sesuai daftar pada section **Skills** di bawah — skills ini TIDAK ter-load otomatis. Ringkasan arsitektur, DocType, dan invarian domain ada di `CLAUDE.md`.
 6. Jangan commit atau push kecuali user memerintahkannya secara eksplisit.
+
+## Skills (baca `SKILL.md`-nya, tidak ter-load otomatis)
+
+- **`.agents/skills/frappe-app-dev/`** — WAJIB untuk semua pekerjaan implementasi Frappe: membuat/mengubah DocType, controller/lifecycle hook, whitelisted API, permission/role, hooks.py, test Frappe, `frappe.db`/`frappe.qb`. Baca hanya file `references/` yang relevan dengan task (mis. `doctypes.md`, `controllers.md`, `testing.md`, `permissions.md`).
+- **`.agents/skills/code-style/`** — WAJIB setiap menulis atau mengedit kode.
+- **`.agents/skills/quality-code-review/`** — pakai sebagai checklist self-review sebelum menyatakan task selesai.
+
+Override untuk `frappe-app-dev` di repo ini: seluruh command bench dijalankan lewat `docker exec` ke devcontainer (lihat section Environment) — jangan jalankan bench dari host, dan jangan memulai `bench start` baru kecuali task memang membutuhkan dev server. Jangan membuat folder DocType dengan `mkdir`; Frappe membuatnya via migrate.
 
 ## Environment, Test, dan Build
 
