@@ -1,0 +1,213 @@
+{
+  "batch_status": {
+    "A1": "in_progress",
+    "A2": "pending",
+    "A3": "pending"
+  },
+  "tasks": {
+    "A1-01": {
+      "status": "in_progress",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-02": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-03": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-04": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-05": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-06": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-07": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-08": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-09": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-10": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A1-11": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-01": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-02": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-03": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-04": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-05": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-06": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-07": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-08": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-09": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A2-10": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A3-01": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A3-02": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A3-03": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A3-04": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A3-05": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A3-06": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A3-07": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    },
+    "A3-08": {
+      "status": "pending",
+      "attempts": 0,
+      "last_result_summary": "",
+      "verification_evidence": ""
+    }
+  },
+  "current_batch_checkpoint_pending": false,
+  "audit_remediation": {
+    "authorized_at": "2026-08-10",
+    "status": "completed",
+    "scope": [
+      "operator_pos_profile_applicability",
+      "uncertain_retry_classification",
+      "atomic_safe_retry",
+      "verification_evidence"
+    ],
+    "verification": {
+      "focused_python": "passed",
+      "full_python": {
+        "status": "passed",
+        "tests": 131,
+        "skipped": 0
+      },
+      "javascript": {
+        "status": "passed",
+        "tests": 42,
+        "skipped": 0
+      },
+      "milestone_bcd_grep": "no_real_implementation",
+      "app_scope": "pos_direct_print_only",
+      "erpnext_frappe_modified_by_remediation": false
+    },
+    "external_worktree_notes": [
+      "ERPNext tracked changes existed before remediation and were not modified by this work."
+    ]
+  }
+}

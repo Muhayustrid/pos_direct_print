@@ -380,3 +380,15 @@ Baru setelah seluruh acceptance test Milestone A lulus:
 ## Catatan Penempatan
 
 A.25–A.27 ditempatkan sebagai larangan pada setiap task karena instruksi task mewajibkan larangan eksplisit per task. A.29 beserta tambahan A.31 ditempatkan satu kali sebagai final checklist agar tidak menduplikasi gate lintas batch.
+
+## Handoff Remediasi Audit — 10 Agustus 2026
+
+User mengizinkan perubahan lintas task hanya untuk menutup temuan audit berikut:
+
+1. Operator POS Profile applicability pada list, direct access, dan original Job creation.
+2. Production retry classification untuk `UNCERTAIN` dan content risk.
+3. Atomic safe-retry counter dan reservation.
+4. Focused regression tests dan full Milestone A verification.
+5. Pencatatan hasil remediation pada `progress.json`.
+
+Handoff ini tidak mengizinkan pekerjaan Milestone B, C, atau D. Handoff ini tidak mengubah riwayat checkpoint A1, A2, atau A3. Agent dilarang mengubah ERPNext dan Frappe.

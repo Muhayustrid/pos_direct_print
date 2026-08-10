@@ -1,0 +1,157 @@
+{
+ "actions": [],
+ "creation": "2026-08-10 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "operating_mode",
+  "default_driver",
+  "terminal_required",
+  "allow_browser_fallback",
+  "browser_fallback_confirmation",
+  "reservation_ttl_seconds",
+  "local_lock_ttl_seconds",
+  "max_safe_auto_retries",
+  "safe_retry_delay_ms",
+  "job_retention_days",
+  "attempt_retention_days",
+  "receipt_schema_version",
+  "debug_logging",
+  "settings_schema_version"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled",
+   "reqd": 1
+  },
+  {
+   "default": "OFF",
+   "fieldname": "operating_mode",
+   "fieldtype": "Select",
+   "label": "Operating Mode",
+   "options": "OFF\nPILOT\nON",
+   "reqd": 1
+  },
+  {
+   "default": "browser",
+   "fieldname": "default_driver",
+   "fieldtype": "Data",
+   "label": "Default Driver",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "terminal_required",
+   "fieldtype": "Check",
+   "label": "Terminal Required",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "allow_browser_fallback",
+   "fieldtype": "Check",
+   "label": "Allow Browser Fallback",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "browser_fallback_confirmation",
+   "fieldtype": "Check",
+   "label": "Browser Fallback Requires Confirmation",
+   "reqd": 1
+  },
+  {
+   "default": "120",
+   "fieldname": "reservation_ttl_seconds",
+   "fieldtype": "Int",
+   "label": "Reservation TTL Seconds",
+   "reqd": 1
+  },
+  {
+   "default": "30",
+   "fieldname": "local_lock_ttl_seconds",
+   "fieldtype": "Int",
+   "label": "Local Lock TTL Seconds",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "max_safe_auto_retries",
+   "fieldtype": "Int",
+   "label": "Max Safe Auto Retries",
+   "reqd": 1
+  },
+  {
+   "default": "1000",
+   "fieldname": "safe_retry_delay_ms",
+   "fieldtype": "Int",
+   "label": "Safe Retry Delay",
+   "reqd": 1
+  },
+  {
+   "default": "180",
+   "fieldname": "job_retention_days",
+   "fieldtype": "Int",
+   "label": "Job Retention Days",
+   "reqd": 1
+  },
+  {
+   "default": "180",
+   "fieldname": "attempt_retention_days",
+   "fieldtype": "Int",
+   "label": "Attempt Retention Days",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "receipt_schema_version",
+   "fieldtype": "Int",
+   "label": "Receipt Schema Version",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "debug_logging",
+   "fieldtype": "Check",
+   "label": "Debug Logging",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "settings_schema_version",
+   "fieldtype": "Int",
+   "label": "Settings Schema Version",
+   "reqd": 1
+  }
+ ],
+ "issingle": 1,
+ "is_submittable": 0,
+ "links": [],
+ "modified": "2026-08-10 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pos Direct Print",
+ "name": "POS Print Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "System Manager",
+   "share": 0,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

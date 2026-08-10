@@ -126,13 +126,19 @@ app_license = "mit"
 # -----------
 # Permissions evaluated in scripted ways
 
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
-#
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+# A.31.15: list/search/report queries and document-level access share one rule
+# source so a row hidden from the list can never be opened by URL/API either.
+permission_query_conditions = {
+	"POS Print Job": "pos_direct_print.core.security.get_job_query_conditions",
+	"POS Print Attempt": "pos_direct_print.core.security.get_attempt_query_conditions",
+	"POS Print Terminal": "pos_direct_print.core.security.get_terminal_query_conditions",
+}
+
+has_permission = {
+	"POS Print Job": "pos_direct_print.core.security.has_job_permission",
+	"POS Print Attempt": "pos_direct_print.core.security.has_attempt_permission",
+	"POS Print Terminal": "pos_direct_print.core.security.has_terminal_permission",
+}
 
 # Document Events
 # ---------------
@@ -255,4 +261,3 @@ app_license = "mit"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-
