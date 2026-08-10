@@ -371,6 +371,8 @@ Urutan implementasinya:
 
 **A1 Persistence → A2 Client Foundation → A3 Receipt/Foundation Integration**
 
+Setiap Batch (A1, A2, A3) wajib berhenti dan menunggu review serta persetujuan eksplisit user sebelum Batch berikutnya dimulai. Task individual dalam satu Batch boleh berjalan berurutan tanpa jeda per-task, tetapi transisi antar-Batch wajib melalui checkpoint manual.
+
 Baru setelah seluruh acceptance test Milestone A lulus:
 
 **mulai Milestone B — Single-device Happy Path.**
