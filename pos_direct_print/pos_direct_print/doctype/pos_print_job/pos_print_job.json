@@ -1,0 +1,350 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:job_id",
+ "creation": "2026-08-10 00:00:00.000000",
+ "description": "One logical printing intent. System-managed audit record: manual Create/Write/Delete is denied for every role so audit history stays intact.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "job_id",
+  "idempotency_key",
+  "reference_doctype",
+  "reference_name",
+  "company",
+  "pos_profile",
+  "terminal",
+  "requested_by",
+  "source",
+  "job_type",
+  "parent_job",
+  "reprint_reason",
+  "driver_key",
+  "status",
+  "status_reason_code",
+  "reservation_owner",
+  "reserved_at",
+  "reserved_until",
+  "attempt_count",
+  "safe_retry_count",
+  "content_may_have_printed",
+  "receipt_schema_version",
+  "receipt_hash",
+  "receipt_snapshot",
+  "started_at",
+  "finished_at",
+  "last_error_code",
+  "last_error_phase",
+  "last_error_detail",
+  "fallback_used",
+  "browser_fallback_at",
+  "metadata_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "job_id",
+   "fieldtype": "Data",
+   "label": "Job ID",
+   "reqd": 1,
+   "search_index": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "idempotency_key",
+   "fieldtype": "Data",
+   "label": "Idempotency Key",
+   "reqd": 1,
+   "search_index": 1,
+   "unique": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference DocType",
+   "options": "DocType",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Name",
+   "options": "reference_doctype",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "pos_profile",
+   "fieldtype": "Link",
+   "label": "POS Profile",
+   "options": "POS Profile",
+   "search_index": 1
+  },
+  {
+   "fieldname": "terminal",
+   "fieldtype": "Link",
+   "label": "Terminal",
+   "options": "POS Print Terminal",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "requested_by",
+   "fieldtype": "Link",
+   "label": "Requested By",
+   "options": "User",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "POS_AUTO\nPOS_MANUAL\nREPRINT_UI\nTEST_UI\nAPI",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "ORIGINAL",
+   "fieldname": "job_type",
+   "fieldtype": "Select",
+   "label": "Job Type",
+   "options": "ORIGINAL\nREPRINT\nTEST",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "parent_job",
+   "fieldtype": "Link",
+   "label": "Parent Job",
+   "options": "POS Print Job",
+   "search_index": 1
+  },
+  {
+   "fieldname": "reprint_reason",
+   "fieldtype": "Small Text",
+   "label": "Reprint Reason"
+  },
+  {
+   "fieldname": "driver_key",
+   "fieldtype": "Data",
+   "label": "Driver Key",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "CREATED",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "CREATED\nRESERVED\nPREFLIGHT\nBLOCKED\nPRINTING\nVERIFYING\nFAILED_SAFE\nUNCERTAIN\nSUCCEEDED\nFALLBACK_BROWSER\nCANCELLED",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "status_reason_code",
+   "fieldtype": "Data",
+   "label": "Status Reason Code",
+   "search_index": 1
+  },
+  {
+   "fieldname": "reservation_owner",
+   "fieldtype": "Data",
+   "label": "Reservation Owner",
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "reserved_at",
+   "fieldtype": "Datetime",
+   "label": "Reserved At",
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "reserved_until",
+   "fieldtype": "Datetime",
+   "label": "Reserved Until",
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "attempt_count",
+   "fieldtype": "Int",
+   "label": "Attempt Count",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "safe_retry_count",
+   "fieldtype": "Int",
+   "label": "Safe Retry Count",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "content_may_have_printed",
+   "fieldtype": "Check",
+   "label": "Content May Have Printed",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "receipt_schema_version",
+   "fieldtype": "Int",
+   "label": "Receipt Schema Version",
+   "reqd": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "receipt_hash",
+   "fieldtype": "Data",
+   "label": "Receipt Hash",
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "receipt_snapshot",
+   "fieldtype": "Long Text",
+   "label": "Receipt Snapshot",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "search_index": 1
+  },
+  {
+   "fieldname": "finished_at",
+   "fieldtype": "Datetime",
+   "label": "Finished At",
+   "search_index": 1
+  },
+  {
+   "fieldname": "last_error_code",
+   "fieldtype": "Data",
+   "label": "Last Error Code",
+   "search_index": 1
+  },
+  {
+   "fieldname": "last_error_phase",
+   "fieldtype": "Select",
+   "label": "Last Error Phase",
+   "options": "VALIDATION\nRESERVATION\nRECEIPT\nPREFLIGHT\nPRINT\nVERIFY\nFALLBACK",
+   "search_index": 1
+  },
+  {
+   "fieldname": "last_error_detail",
+   "fieldtype": "Long Text",
+   "label": "Last Error Detail",
+   "permlevel": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "fallback_used",
+   "fieldtype": "Check",
+   "label": "Fallback Used",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "browser_fallback_at",
+   "fieldtype": "Datetime",
+   "label": "Browser Fallback At"
+  },
+  {
+   "fieldname": "metadata_json",
+   "fieldtype": "Long Text",
+   "label": "Metadata JSON",
+   "permlevel": 1
+  }
+ ],
+ "is_submittable": 0,
+ "links": [],
+ "modified": "2026-08-10 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pos Direct Print",
+ "name": "POS Print Job",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 0,
+   "write": 0
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 1,
+   "role": "POS Print Manager",
+   "share": 0,
+   "write": 0
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "POS Print Operator",
+   "share": 0,
+   "write": 0
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "permlevel": 1,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "System Manager",
+   "share": 0,
+   "write": 0
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "permlevel": 1,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "POS Print Manager",
+   "share": 0,
+   "write": 0
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

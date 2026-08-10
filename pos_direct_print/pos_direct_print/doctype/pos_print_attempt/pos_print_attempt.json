@@ -1,0 +1,262 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:attempt_id",
+ "creation": "2026-08-10 00:00:00.000000",
+ "description": "One physical execution attempt under a POS Print Job. System-managed immutable audit record: only JobCoordinator may create attempts; manual Create/Write/Delete is denied for every role.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "attempt_id",
+  "job",
+  "attempt_no",
+  "terminal",
+  "driver_key",
+  "outcome",
+  "phase_reached",
+  "content_started",
+  "content_completed",
+  "normalized_status_before",
+  "normalized_status_after",
+  "raw_status_before",
+  "raw_status_after",
+  "error_code",
+  "error_detail",
+  "retry_class",
+  "client_session_id",
+  "browser_tab_id",
+  "paired_client_id",
+  "driver_version",
+  "asset_version",
+  "started_at",
+  "finished_at",
+  "duration_ms",
+  "metadata_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "attempt_id",
+   "fieldtype": "Data",
+   "label": "Attempt ID",
+   "reqd": 1,
+   "search_index": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "job",
+   "fieldtype": "Link",
+   "label": "Job",
+   "options": "POS Print Job",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "attempt_no",
+   "fieldtype": "Int",
+   "label": "Attempt No",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "terminal",
+   "fieldtype": "Link",
+   "label": "Terminal",
+   "options": "POS Print Terminal",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "driver_key",
+   "fieldtype": "Data",
+   "label": "Driver Key",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "STARTED",
+   "fieldname": "outcome",
+   "fieldtype": "Select",
+   "label": "Outcome",
+   "options": "STARTED\nBLOCKED\nFAILED_SAFE\nUNCERTAIN\nSUCCEEDED\nFALLBACK_BROWSER\nCANCELLED",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "RESERVATION",
+   "fieldname": "phase_reached",
+   "fieldtype": "Select",
+   "label": "Phase Reached",
+   "options": "RESERVATION\nRECEIPT\nPREFLIGHT\nPRINT\nVERIFY\nFALLBACK",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "content_started",
+   "fieldtype": "Check",
+   "label": "Content Started",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "content_completed",
+   "fieldtype": "Check",
+   "label": "Content Completed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "normalized_status_before",
+   "fieldtype": "Data",
+   "label": "Normalized Status Before",
+   "search_index": 1
+  },
+  {
+   "fieldname": "normalized_status_after",
+   "fieldtype": "Data",
+   "label": "Normalized Status After",
+   "search_index": 1
+  },
+  {
+   "fieldname": "raw_status_before",
+   "fieldtype": "Small Text",
+   "label": "Raw Status Before",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "raw_status_after",
+   "fieldtype": "Small Text",
+   "label": "Raw Status After",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "error_code",
+   "fieldtype": "Data",
+   "label": "Error Code",
+   "search_index": 1
+  },
+  {
+   "fieldname": "error_detail",
+   "fieldtype": "Long Text",
+   "label": "Error Detail",
+   "permlevel": 1
+  },
+  {
+   "default": "NONE",
+   "fieldname": "retry_class",
+   "fieldtype": "Select",
+   "label": "Retry Class",
+   "options": "NONE\nAUTO_SAFE\nMANUAL_SAFE\nREPRINT_ONLY",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "client_session_id",
+   "fieldtype": "Data",
+   "label": "Client Session ID",
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "browser_tab_id",
+   "fieldtype": "Data",
+   "label": "Browser Tab ID",
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "paired_client_id",
+   "fieldtype": "Data",
+   "label": "Paired Client ID",
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "driver_version",
+   "fieldtype": "Data",
+   "label": "Driver Version",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "asset_version",
+   "fieldtype": "Data",
+   "label": "Asset Version",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "finished_at",
+   "fieldtype": "Datetime",
+   "label": "Finished At",
+   "search_index": 1
+  },
+  {
+   "fieldname": "duration_ms",
+   "fieldtype": "Int",
+   "label": "Duration ms"
+  },
+  {
+   "fieldname": "metadata_json",
+   "fieldtype": "Long Text",
+   "label": "Metadata JSON",
+   "permlevel": 1
+  }
+ ],
+ "is_submittable": 0,
+ "links": [],
+ "modified": "2026-08-10 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pos Direct Print",
+ "name": "POS Print Attempt",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 0,
+   "write": 0
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 1,
+   "role": "POS Print Manager",
+   "share": 0,
+   "write": 0
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "permlevel": 1,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "System Manager",
+   "share": 0,
+   "write": 0
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
