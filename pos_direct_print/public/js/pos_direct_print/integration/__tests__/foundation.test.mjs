@@ -12,10 +12,14 @@ import { test } from "node:test";
 import { SubsystemBootstrap } from "../../core/bootstrap.mjs";
 import { CapabilityRegistry } from "../../core/capability_registry.mjs";
 import { JobCoordinator } from "../../core/job_coordinator.mjs";
+import { makeError } from "../../core/errors.mjs";
 import { VALID_TRANSITIONS } from "../../core/print_job.mjs";
 import { PrintManager } from "../../core/print_manager.mjs";
 import { FakeDriver } from "../../drivers/fake_driver.mjs";
-import { POSIntegrationAdapter } from "../erpnext_v16_pos.mjs";
+import {
+  POSIntegrationAdapter,
+  computeIdempotencyKey,
+} from "../erpnext_v16_pos.mjs";
 
 /** In-memory stand-in for the server transport — mirrors the RPC contract. */
 class InMemoryApi {
@@ -160,6 +164,8 @@ function makeSummary() {
         doctype: "POS Invoice",
         name: "POS-INV-001",
         owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
       },
     },
     terminal_id: "TERM-1",
@@ -168,13 +174,21 @@ function makeSummary() {
   };
 }
 
+/** Default fake resolver: fixed terminal, no server or localStorage. */
+async function fakeResolveTerminalContext() {
+  return { pos_direct_print_terminal_id: "TERM-1" };
+}
+
 function makeRequest(manager, settings) {
   const prototype = {
     print_receipt() {
       return "original-printed";
     },
   };
-  const adapter = new POSIntegrationAdapter({ get_settings: () => settings });
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => settings,
+    resolve_terminal_context: fakeResolveTerminalContext,
+  });
   const handle = adapter.installOverride(manager, prototype);
   return { prototype, adapter, handle };
 }
@@ -193,6 +207,7 @@ test("A-AT-04: initializing three times still yields exactly one PrintRequest", 
   // each initialize returns the same live handle and never repatches.
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const first = adapter.installOverride(manager, prototype);
   const second = adapter.installOverride(manager, prototype);
@@ -237,6 +252,7 @@ test("A-AT-05: restoring the override returns to the original print path", async
   };
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const handle = adapter.installOverride(manager, prototype);
 
@@ -286,6 +302,7 @@ test("A-AT-13: fake driver drives orchestration without any iMin dependency", as
   const { manager } = makeFoundation();
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -349,6 +366,7 @@ test("A-AT-15: raw driver exceptions normalize into a canonical user error", asy
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -373,6 +391,7 @@ test("content started without completion settles UNCERTAIN with reprint-only sem
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -389,6 +408,7 @@ test("pre-content failure settles FAILED_SAFE", async () => {
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -401,6 +421,182 @@ test("pre-content failure settles FAILED_SAFE", async () => {
 
 // ---------------------------------------------------------------- A-AT-11
 
+// ---------------------------------------------------------------- B4-01 context wiring
+
+test("computeIdempotencyKey is stable for identical inputs", () => {
+  const key = {
+    schema_version: 1,
+    reference_doctype: "POS Invoice",
+    reference_name: "POS-INV-001",
+    terminal_id: "TERM-1",
+    job_type: "ORIGINAL",
+  };
+  assert.equal(computeIdempotencyKey(key), computeIdempotencyKey(key));
+  assert.match(computeIdempotencyKey(key), /^pdpr1:[0-9a-f]{16}$/);
+});
+
+test("computeIdempotencyKey differs across invoices and terminals", () => {
+  const base = {
+    schema_version: 1,
+    reference_doctype: "POS Invoice",
+    terminal_id: "TERM-1",
+    job_type: "ORIGINAL",
+  };
+  const a = computeIdempotencyKey({ ...base, reference_name: "POS-INV-001" });
+  const b = computeIdempotencyKey({ ...base, reference_name: "POS-INV-002" });
+  const c = computeIdempotencyKey({
+    ...base,
+    reference_name: "POS-INV-001",
+    terminal_id: "TERM-2",
+  });
+  assert.notEqual(a, b);
+  assert.notEqual(a, c);
+});
+
+test("fake resolver context reaches buildPrintRequest (B4-01)", async () => {
+  const { manager } = makeFoundation();
+  const calls = [];
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true, receipt_schema_version: 1 }),
+    resolve_terminal_context: async (summary) => {
+      calls.push({ pos_profile: summary.frm.doc.pos_profile });
+      return {
+        pos_direct_print_terminal_id: "TERM-RESOLVED",
+        pos_direct_print_idempotency_key: "idem-resolved-1",
+        paired_client_id: "client-resolved-1",
+      };
+    },
+  });
+  const prototype = { print_receipt() {} };
+  adapter.installOverride(manager, prototype);
+
+  const summary = {
+    frm: {
+      doc: {
+        doctype: "POS Invoice",
+        name: "POS-INV-CTX-1",
+        owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
+      },
+    },
+  };
+
+  await prototype.print_receipt.call(summary);
+
+  assert.equal(calls.length, 1, "resolver invoked exactly once");
+  const request = manager.requests_received[0];
+  assert.equal(request.terminal_id, "TERM-RESOLVED");
+  assert.equal(request.source, "POS_AUTO");
+  assert.equal(request.job_type, "ORIGINAL");
+  assert.equal(request.reference_name, "POS-INV-CTX-1");
+});
+
+test("default resolve_context caches per company|pos_profile and assigns idempotency key", async () => {
+  const { manager } = makeFoundation();
+  let resolver_calls = 0;
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true, receipt_schema_version: 1 }),
+    resolve_terminal_context: async () => {
+      resolver_calls += 1;
+      return {
+        pos_direct_print_terminal_id: "TERM-CACHED",
+        pos_direct_print_idempotency_key: "idem-cached-1",
+        paired_client_id: "client-cached-1",
+      };
+    },
+  });
+  const prototype = { print_receipt() {} };
+  adapter.installOverride(manager, prototype);
+
+  const summary = {
+    frm: {
+      doc: {
+        doctype: "POS Invoice",
+        name: "POS-INV-CACHE-1",
+        owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
+      },
+    },
+  };
+
+  await prototype.print_receipt.call(summary);
+  await prototype.print_receipt.call({ ...summary });
+
+  // The cache is keyed company|pos_profile: the second call reuses the entry.
+  assert.equal(resolver_calls, 1, "resolver called once thanks to the cache");
+  assert.equal(manager.requests_received.length, 2);
+  assert.equal(manager.requests_received[0].terminal_id, "TERM-CACHED");
+  assert.equal(manager.requests_received[1].terminal_id, "TERM-CACHED");
+});
+
+test("resolver failure surfaces canonical error without touching original print", async () => {
+  const { manager } = makeFoundation();
+  let original_calls = 0;
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: async () => {
+      throw makeError("PDP_TERMINAL_NOT_FOUND", {
+        phase: "RESERVATION",
+        metadata: { reason: "no terminal for profile" },
+      });
+    },
+  });
+  const prototype = {
+    print_receipt() {
+      original_calls++;
+      return "original-printed";
+    },
+  };
+  adapter.installOverride(manager, prototype);
+
+  await assert.rejects(
+    () => prototype.print_receipt.call(makeSummary()),
+    (err) => err.code === "PDP_TERMINAL_NOT_FOUND"
+  );
+  assert.equal(
+    original_calls,
+    0,
+    "original path never called on resolver failure"
+  );
+  assert.equal(manager.requests_received.length, 0, "orchestration bypassed");
+});
+
+test("disabled settings bypass resolver entirely (A-AT-06 regression)", async () => {
+  const { manager } = makeFoundation();
+  let original_calls = 0;
+  let resolver_calls = 0;
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: false }),
+    resolve_terminal_context: async () => {
+      resolver_calls++;
+      return {
+        pos_direct_print_terminal_id: "TERM-1",
+        pos_direct_print_idempotency_key: "idem-1",
+        paired_client_id: "client-1",
+      };
+    },
+  });
+  const prototype = {
+    print_receipt() {
+      original_calls++;
+      return "original-printed";
+    },
+  };
+  adapter.installOverride(manager, prototype);
+
+  await prototype.print_receipt.call(makeSummary());
+
+  assert.equal(original_calls, 1, "baseline ERPNext print used");
+  assert.equal(resolver_calls, 0, "resolver never called when disabled");
+  assert.equal(
+    manager.requests_received.length,
+    0,
+    "orchestration not invoked"
+  );
+});
+
 test("A-AT-11: safe retry reuses the SAME Job with a new Attempt", async () => {
   const settings = {
     driver_script: { print_behavior: "fail_before_content" },
@@ -408,6 +604,7 @@ test("A-AT-11: safe retry reuses the SAME Job with a new Attempt", async () => {
   const { api, manager } = makeFoundation(settings);
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);

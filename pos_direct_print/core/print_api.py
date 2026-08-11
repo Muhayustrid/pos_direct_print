@@ -36,6 +36,55 @@ def resolve_terminal(terminal_id):
 
 
 @frappe.whitelist()
+def resolve_terminal_for_profile(company, pos_profile):
+	"""Row-scoped read-only lookup: the enabled, QUALIFIED terminal for a
+	Company + POS Profile. Returns the NEW terminal transport projection only.
+	Mirrors _scoped_terminal authorization; fail-closed."""
+	user = frappe.session.user
+	scopes = user_scopes(user)
+	if not scopes["unrestricted"]:
+		if scopes["companies"] and company not in scopes["companies"]:
+			frappe.throw(
+				_("PDP_PERMISSION_DENIED: company is outside your authorized scope."),
+				exc=frappe.PermissionError,
+			)
+		if scopes["manager"] and (not scopes["profiles"] or pos_profile not in scopes["profiles"]):
+			frappe.throw(
+				_("PDP_PERMISSION_DENIED: POS Profile is outside your authorized scope."),
+				exc=frappe.PermissionError,
+			)
+		if not (scopes["manager"] or scopes["operator"]):
+			frappe.throw(
+				_("PDP_PERMISSION_DENIED: no print role grants terminal access."),
+				exc=frappe.PermissionError,
+			)
+	name = frappe.db.get_value(
+		"POS Print Terminal",
+		{"company": company, "pos_profile": pos_profile, "enabled": 1},
+		"name",
+		order_by="creation asc",
+	)
+	if not name:
+		frappe.throw(
+			_("PDP_TERMINAL_NOT_FOUND: no enabled terminal for {0} / {1}.").format(company, pos_profile),
+			exc=frappe.ValidationError,
+		)
+	terminal = frappe.get_doc("POS Print Terminal", name)
+	if terminal.qualification_status != "QUALIFIED":
+		frappe.throw(
+			_("PDP_TERMINAL_NOT_QUALIFIED: terminal {0} is not qualified.").format(name),
+			exc=frappe.ValidationError,
+		)
+	return {
+		"terminal_id": terminal.terminal_id,
+		"transport": terminal.transport,
+		"driver_key": terminal.driver_key,
+		"paper_width_mm": terminal.paper_width_mm,
+		"qualification_status": terminal.qualification_status,
+	}
+
+
+@frappe.whitelist()
 def reserve_print_job(
 	reference_doctype,
 	reference_name,

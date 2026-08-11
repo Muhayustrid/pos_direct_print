@@ -71,6 +71,7 @@ export class SubsystemBootstrap {
     const adapter = new POSIntegrationAdapter({
       get_settings: context.get_settings || (() => settings),
     });
+    adapter._setPrintApi(api);
 
     let integration_installed = false;
     if (context.pos_context && adapter.isSupported(context.pos_context)) {

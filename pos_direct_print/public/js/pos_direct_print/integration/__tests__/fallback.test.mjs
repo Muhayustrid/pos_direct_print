@@ -127,6 +127,8 @@ function makeSummary() {
         doctype: "POS Invoice",
         name: "POS-INV-FB-1",
         owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
       },
     },
     terminal_id: "TERM-1",
@@ -143,6 +145,9 @@ test("A-AT-16: approved fallback after pre-content failure hands off to the orig
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: async () => ({
+      pos_direct_print_terminal_id: "TERM-1",
+    }),
   });
   let original_calls = 0;
   const prototype = {
@@ -182,6 +187,9 @@ test("browser handoff is never reported as physical success", async () => {
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: async () => ({
+      pos_direct_print_terminal_id: "TERM-1",
+    }),
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -205,6 +213,9 @@ test("A-AT-17: fallback with content risk is denied and original path never call
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: async () => ({
+      pos_direct_print_terminal_id: "TERM-1",
+    }),
   });
   let original_calls = 0;
   const prototype = {
@@ -234,6 +245,9 @@ test("fallback without approval is denied even with zero content risk", async ()
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: async () => ({
+      pos_direct_print_terminal_id: "TERM-1",
+    }),
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);

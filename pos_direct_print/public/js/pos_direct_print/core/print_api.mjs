@@ -12,6 +12,7 @@ export const MODULE = "pos_direct_print.core.print_api";
 export const OPERATIONS = Object.freeze({
   GET_SETTINGS: `${MODULE}.get_settings`,
   RESOLVE_TERMINAL: `${MODULE}.resolve_terminal`,
+  RESOLVE_TERMINAL_FOR_PROFILE: `${MODULE}.resolve_terminal_for_profile`,
   RESERVE_PRINT_JOB: `${MODULE}.reserve_print_job`,
   START_ATTEMPT: `${MODULE}.start_attempt`,
   TRANSITION_JOB: `${MODULE}.transition_job`,
@@ -24,6 +25,7 @@ export const OPERATIONS = Object.freeze({
 const OPERATION_PHASES = Object.freeze({
   [OPERATIONS.GET_SETTINGS]: "RESERVATION",
   [OPERATIONS.RESOLVE_TERMINAL]: "RESERVATION",
+  [OPERATIONS.RESOLVE_TERMINAL_FOR_PROFILE]: "RESERVATION",
   [OPERATIONS.RESERVE_PRINT_JOB]: "RESERVATION",
   [OPERATIONS.START_ATTEMPT]: "PREFLIGHT",
   [OPERATIONS.TRANSITION_JOB]: "PRINT",
@@ -48,6 +50,13 @@ export class PrintApi {
 
   resolveTerminal(terminal_id) {
     return this._invoke(OPERATIONS.RESOLVE_TERMINAL, { terminal_id });
+  }
+
+  resolveTerminalForProfile(company, pos_profile) {
+    return this._invoke(OPERATIONS.RESOLVE_TERMINAL_FOR_PROFILE, {
+      company,
+      pos_profile,
+    });
   }
 
   reservePrintJob(payload) {

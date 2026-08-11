@@ -9,6 +9,7 @@ from pos_direct_print.core.print_api import (
 	release_reservation,
 	reserve_print_job,
 	resolve_terminal,
+	resolve_terminal_for_profile,
 	retrieve_job,
 	start_attempt,
 	transition_job,
@@ -210,6 +211,93 @@ class TestPrintApiTransport(IntegrationTestCase):
 				retrieve_job(reservation["job_id"])
 
 
+class TestResolveTerminalForProfile(IntegrationTestCase):
+	"""B4-01 — row-scoped terminal lookup for the POS context (C-3 resolved:
+	transport travels in this lookup's own projection, not the frozen one)."""
+
+	def setUp(self):
+		self.operator = _user_with_role("profile.op@example.test", "POS Print Operator")
+		self.manager_a = _user_with_role("profile.mgr.a@example.test", "POS Print Manager")
+		self.manager_none = _user_with_role("profile.mgr.none@example.test", "POS Print Manager")
+		self.no_role = _user_with_role("profile.norole@example.test", "Sales User")
+		# Dedicated profile per test: the site's shared OUTLET_A carries legacy
+		# UNVERIFIED terminals that would win the creation-asc lookup.
+		self.profile = _pos_profile("PDP Resolve Profile", self.operator)
+		_user_permission(self.manager_a, "POS Profile", self.profile)
+
+	def test_operator_with_applicable_profile_gets_transport_projection(self):
+		terminal = _terminal(
+			self.profile,
+			qualification_status="QUALIFIED",
+			transport="USB",
+			paper_width_mm="58",
+			driver_key="imin_v1",
+		)
+		with _user(self.operator):
+			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertEqual(projection["terminal_id"], terminal)
+		self.assertEqual(projection["transport"], "USB")
+		self.assertEqual(projection["driver_key"], "imin_v1")
+		self.assertEqual(projection["paper_width_mm"], "58")
+		self.assertEqual(projection["qualification_status"], "QUALIFIED")
+		# Device-admin fields never cross this RPC boundary either.
+		self.assertNotIn("device_serial", projection)
+		self.assertNotIn("pairing_status", projection)
+
+	def test_manager_without_pos_profile_scope_rejected(self):
+		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		with _user(self.manager_none):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
+	def test_manager_with_scope_gets_lookup(self):
+		terminal = _terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		with _user(self.manager_a):
+			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertEqual(projection["terminal_id"], terminal)
+
+	def test_user_with_no_print_role_rejected(self):
+		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		with _user(self.no_role):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
+	def test_no_enabled_terminal_raises_not_found(self):
+		_terminal(self.profile, qualification_status="QUALIFIED", enabled=0)
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_TERMINAL_NOT_FOUND", str(ctx.exception))
+
+	def test_enabled_unverified_terminal_raises_not_qualified(self):
+		_terminal(self.profile, qualification_status="UNVERIFIED", enabled=1)
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_TERMINAL_NOT_QUALIFIED", str(ctx.exception))
+
+	def test_two_enabled_terminals_returns_oldest(self):
+		older = _terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		_terminal(self.profile, qualification_status="QUALIFIED", transport="SPI")
+		frappe.db.set_value("POS Print Terminal", older, "creation", "2020-01-01 08:00:00")
+		with _user(self.operator):
+			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertEqual(projection["terminal_id"], older)
+
+	def test_out_of_company_scope_rejected(self):
+		# Company User Permission narrows scope to COMPANY, so a lookup for a
+		# different company is denied even though a terminal exists there.
+		other_company = "_Test Company"
+		_terminal(self.profile, qualification_status="QUALIFIED", company=other_company)
+		_user_permission(self.operator, "Company", COMPANY)
+		with _user(self.operator):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal_for_profile(other_company, self.profile)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
+
 class _user:
 	def __init__(self, user):
 		self.user = user
@@ -256,18 +344,28 @@ def _pos_profile_grant_user(pos_profile, user):
 		profile.save(ignore_permissions=True)
 
 
-def _terminal(pos_profile):
+def _pos_profile(name, user=None, *, company=COMPANY, disabled=0):
+	"""Fresh POS Profile copied from the site template, so lookups scoped to it
+	never collide with legacy terminals on the shared OUTLET_A profile."""
+	source = frappe.get_doc("POS Profile", OUTLET_A)
+	profile = frappe.copy_doc(source)
+	profile.name = f"{name}-{uuid.uuid4().hex[:8]}"
+	profile.company = company
+	profile.disabled = disabled
+	profile.set("applicable_for_users", [])
+	if user:
+		profile.append("applicable_for_users", {"user": user, "default": 0})
+	return profile.insert(ignore_permissions=True).name
+
+
+def _terminal(pos_profile, **overrides):
 	suffix = uuid.uuid4().hex[:8]
-	return (
-		frappe.get_doc(
-			{
-				"doctype": "POS Print Terminal",
-				"terminal_id": f"TERM-{suffix}",
-				"terminal_label": f"Terminal {suffix}",
-				"company": COMPANY,
-				"pos_profile": pos_profile,
-			}
-		)
-		.insert(ignore_permissions=True)
-		.name
-	)
+	fields = {
+		"doctype": "POS Print Terminal",
+		"terminal_id": f"TERM-{suffix}",
+		"terminal_label": f"Terminal {suffix}",
+		"company": COMPANY,
+		"pos_profile": pos_profile,
+	}
+	fields.update(overrides)
+	return frappe.get_doc(fields).insert(ignore_permissions=True).name

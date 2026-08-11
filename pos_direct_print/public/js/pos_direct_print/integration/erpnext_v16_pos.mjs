@@ -25,6 +25,11 @@ export class POSIntegrationAdapter {
    */
   constructor(options = {}) {
     this.get_settings = options.get_settings || (() => ({ enabled: true }));
+    this.resolve_terminal_context =
+      options.resolve_terminal_context ||
+      this._defaultResolveTerminalContext.bind(this);
+    // Per-session terminal resolution cache, keyed company|pos_profile.
+    this._terminal_cache = new Map();
     this.override_handle = null;
   }
 
@@ -70,9 +75,15 @@ export class POSIntegrationAdapter {
         return adapter.invokeOriginalPrint(original_method, this, args);
       }
 
-      const request = adapter.buildPrintRequest(this, args, "POS_AUTO");
-      return print_manager
-        .requestPrint(request, adapter._requestContext(this))
+      return Promise.resolve()
+        .then(() => adapter.resolve_context(this))
+        .then((ctx) => Object.assign(this, ctx))
+        .then(() =>
+          print_manager.requestPrint(
+            adapter.buildPrintRequest(this, args, "POS_AUTO"),
+            adapter._requestContext(this)
+          )
+        )
         .then((outcome) =>
           adapter._settleOutcome(outcome, original_method, this, args)
         );
@@ -167,6 +178,110 @@ export class POSIntegrationAdapter {
     }
   }
 
+  /**
+   * Resolve the terminal + idempotency context for a POS summary (B4-01).
+   * Returns { pos_direct_print_terminal_id, pos_direct_print_idempotency_key,
+   * paired_client_id }. The terminal resolution is cached per session keyed
+   * company|pos_profile; the idempotency key is computed per invoice so a
+   * different receipt on the same terminal gets its own key.
+   */
+  async resolve_context(summary) {
+    const settings = this._settings();
+    const doc = summary?.frm?.doc || summary?.doc;
+    const cache_key =
+      doc?.company && doc?.pos_profile
+        ? `${doc.company}|${doc.pos_profile}`
+        : null;
+
+    let resolved;
+    if (cache_key && this._terminal_cache.has(cache_key)) {
+      resolved = this._terminal_cache.get(cache_key);
+    } else {
+      resolved = await this.resolve_terminal_context(summary, settings);
+      if (cache_key) {
+        this._terminal_cache.set(cache_key, resolved);
+      }
+    }
+
+    if (!resolved.pos_direct_print_terminal_id) {
+      throw makeError("PDP_TERMINAL_NOT_FOUND", {
+        phase: "RESERVATION",
+        metadata: { reason: "terminal resolver returned no terminal" },
+      });
+    }
+
+    return {
+      pos_direct_print_terminal_id: resolved.pos_direct_print_terminal_id,
+      pos_direct_print_idempotency_key:
+        resolved.pos_direct_print_idempotency_key ||
+        this._defaultIdempotencyKey(summary, settings, resolved),
+      paired_client_id: resolved.paired_client_id || this._pairedClientId(),
+    };
+  }
+
+  /**
+   * Default terminal resolver: ask the server which enabled QUALIFIED terminal
+   * serves that Company + POS Profile. No hardcoded terminal anywhere.
+   */
+  async _defaultResolveTerminalContext(summary, settings) {
+    const doc = summary?.frm?.doc || summary?.doc;
+    const pos_profile = doc?.pos_profile;
+    const company = doc?.company;
+    if (!pos_profile || !company) {
+      throw makeError("PDP_TERMINAL_NOT_FOUND", {
+        phase: "RESERVATION",
+        metadata: { reason: "invoice snapshot lacks pos_profile/company" },
+      });
+    }
+    const api = this._print_api;
+    if (!api) {
+      throw makeError("PDP_SERVER_UNAVAILABLE", {
+        phase: "RESERVATION",
+        metadata: { reason: "print api not wired to adapter" },
+      });
+    }
+    const projection = await api.resolveTerminalForProfile(
+      company,
+      pos_profile
+    );
+    return { pos_direct_print_terminal_id: projection.terminal_id };
+  }
+
+  _defaultIdempotencyKey(summary, settings, resolved) {
+    const doc = summary?.frm?.doc || summary?.doc;
+    return computeIdempotencyKey({
+      schema_version: settings.receipt_schema_version || 1,
+      reference_doctype: doc?.doctype,
+      reference_name: doc?.name,
+      terminal_id: resolved.pos_direct_print_terminal_id,
+      job_type: "ORIGINAL",
+    });
+  }
+
+  /**
+   * Browser-stable client identity: persisted once per browser installation.
+   */
+  _pairedClientId() {
+    if (typeof localStorage === "undefined") {
+      return "unpaired-local-storage";
+    }
+    let id = localStorage.getItem("pos_direct_print_paired_client_id");
+    if (!id) {
+      id = `pdp-${Math.random().toString(36).slice(2)}-${Date.now().toString(
+        36
+      )}`;
+      localStorage.setItem("pos_direct_print_paired_client_id", id);
+    }
+    return id;
+  }
+
+  /**
+   * Wire the transport so the default resolver can reach the server.
+   */
+  _setPrintApi(api) {
+    this._print_api = api;
+  }
+
   _requestContext(summary) {
     return {
       invoice_snapshot: summary?.frm?.doc || summary?.doc || null,
@@ -195,4 +310,41 @@ function _prototypeFrom(context) {
     return context;
   }
   return context.prototype || context.PastOrderSummary || null;
+}
+
+/**
+ * Deterministic ORIGINAL idempotency key (plan.md §8): FNV-1a over the
+ * semantic components joined with "|", no timestamp. The same logical intent
+ * always yields the same key; a different invoice, terminal, or purpose
+ * changes it. Reuses the pdpr1: FNV lane from receipt_builder.
+ */
+export function computeIdempotencyKey({
+  schema_version,
+  reference_doctype,
+  reference_name,
+  terminal_id,
+  job_type,
+  purpose = "ORIGINAL_PRINT",
+}) {
+  const canonical = [
+    String(schema_version),
+    String(reference_doctype),
+    String(reference_name),
+    String(terminal_id),
+    String(job_type),
+    String(purpose),
+  ].join("|");
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < canonical.length; i += 1) {
+    const byte = canonical.charCodeAt(i) & 0xff;
+    h1 ^= byte;
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+    h2 =
+      Math.imul(h2 ^ ((canonical.charCodeAt(i) >> 8) & 0xff), 0x01000193) >>> 0;
+  }
+  return `pdpr1:${h1.toString(16).padStart(8, "0")}${h2
+    .toString(16)
+    .padStart(8, "0")}`;
 }
