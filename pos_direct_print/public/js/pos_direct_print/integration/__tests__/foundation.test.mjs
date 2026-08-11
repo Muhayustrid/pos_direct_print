@@ -531,6 +531,99 @@ test("default resolve_context caches per company|pos_profile and assigns idempot
   assert.equal(manager.requests_received[1].terminal_id, "TERM-CACHED");
 });
 
+test("same profile, two invoices: resolver called once, idempotency keys differ", async () => {
+  const { api, manager } = makeFoundation();
+  let resolver_calls = 0;
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true, receipt_schema_version: 1 }),
+    resolve_terminal_context: async () => {
+      resolver_calls += 1;
+      return {
+        pos_direct_print_terminal_id: "TERM-CACHED",
+        // Deliberately stale resolver-supplied key: the adapter must never
+        // cache or trust it, or invoice B would inherit invoice A's key.
+        pos_direct_print_idempotency_key: "stale-invoice-A-key",
+        paired_client_id: "client-cached-1",
+      };
+    },
+  });
+  const prototype = { print_receipt() {} };
+  adapter.installOverride(manager, prototype);
+
+  const summaryA = {
+    frm: {
+      doc: {
+        doctype: "POS Invoice",
+        name: "POS-INV-LEAK-A",
+        owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
+      },
+    },
+  };
+  const summaryB = {
+    ...summaryA,
+    frm: { doc: { ...summaryA.frm.doc, name: "POS-INV-LEAK-B" } },
+  };
+
+  await prototype.print_receipt.call(summaryA);
+  await prototype.print_receipt.call(summaryB);
+
+  assert.equal(resolver_calls, 1, "terminal resolved once for the profile");
+  assert.equal(
+    manager.requests_received.length,
+    2,
+    "two invoices produce two requests"
+  );
+  assert.equal(api.jobs.size, 2, "distinct keys create distinct Jobs");
+  const keys = [...api.jobs.values()].map((job) => job.idempotency_key);
+  assert.equal(
+    new Set(keys).size,
+    2,
+    "two invoices on one terminal never share an idempotency key"
+  );
+  assert.ok(
+    keys.every((k) => k !== "stale-invoice-A-key"),
+    "resolver-supplied key is never trusted"
+  );
+});
+
+test("resolved context preserves terminal transport, driver_key, and paper_width_mm", async () => {
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true, receipt_schema_version: 1 }),
+    resolve_terminal_context: async () => ({
+      pos_direct_print_terminal_id: "TERM-T",
+      pos_direct_print_transport: "USB",
+      pos_direct_print_driver_key: "imin_v1",
+      pos_direct_print_paper_width_mm: "58",
+      paired_client_id: "client-t",
+    }),
+  });
+
+  const summary = {
+    frm: {
+      doc: {
+        doctype: "POS Invoice",
+        name: "POS-INV-TRANSPORT",
+        owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
+      },
+    },
+  };
+
+  const ctx = await adapter.resolve_context(summary);
+
+  assert.equal(ctx.pos_direct_print_terminal_id, "TERM-T");
+  assert.equal(ctx.pos_direct_print_transport, "USB");
+  assert.equal(ctx.pos_direct_print_driver_key, "imin_v1");
+  assert.equal(ctx.pos_direct_print_paper_width_mm, "58");
+  assert.ok(
+    ctx.pos_direct_print_idempotency_key.startsWith("pdpr1:"),
+    "key is still derived per invoice"
+  );
+});
+
 test("resolver failure surfaces canonical error without touching original print", async () => {
   const { manager } = makeFoundation();
   let original_calls = 0;

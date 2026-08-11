@@ -180,10 +180,12 @@ export class POSIntegrationAdapter {
 
   /**
    * Resolve the terminal + idempotency context for a POS summary (B4-01).
-   * Returns { pos_direct_print_terminal_id, pos_direct_print_idempotency_key,
-   * paired_client_id }. The terminal resolution is cached per session keyed
-   * company|pos_profile; the idempotency key is computed per invoice so a
-   * different receipt on the same terminal gets its own key.
+   * Returns { pos_direct_print_terminal_id, pos_direct_print_transport,
+   * pos_direct_print_driver_key, pos_direct_print_paper_width_mm,
+   * pos_direct_print_idempotency_key, paired_client_id }. Only terminal-scoped
+   * data is cached per session keyed company|pos_profile; the idempotency key
+   * is always computed per invoice so a different receipt on the same terminal
+   * gets its own key and can never leak across invoices.
    */
   async resolve_context(summary) {
     const settings = this._settings();
@@ -193,17 +195,29 @@ export class POSIntegrationAdapter {
         ? `${doc.company}|${doc.pos_profile}`
         : null;
 
-    let resolved;
+    // The cache holds TERMINAL-scoped data only (terminal_id, transport,
+    // driver_key, paper_width_mm) — nothing invoice-specific. The idempotency
+    // key is derived per invoice below and is never cached or trusted from the
+    // resolver, so a second invoice on the same Company + POS Profile can never
+    // inherit invoice A's key.
+    let terminal;
     if (cache_key && this._terminal_cache.has(cache_key)) {
-      resolved = this._terminal_cache.get(cache_key);
+      terminal = this._terminal_cache.get(cache_key);
     } else {
-      resolved = await this.resolve_terminal_context(summary, settings);
+      const resolved = await this.resolve_terminal_context(summary, settings);
+      terminal = {
+        pos_direct_print_terminal_id: resolved.pos_direct_print_terminal_id,
+        pos_direct_print_transport: resolved.pos_direct_print_transport,
+        pos_direct_print_driver_key: resolved.pos_direct_print_driver_key,
+        pos_direct_print_paper_width_mm:
+          resolved.pos_direct_print_paper_width_mm,
+      };
       if (cache_key) {
-        this._terminal_cache.set(cache_key, resolved);
+        this._terminal_cache.set(cache_key, terminal);
       }
     }
 
-    if (!resolved.pos_direct_print_terminal_id) {
+    if (!terminal.pos_direct_print_terminal_id) {
       throw makeError("PDP_TERMINAL_NOT_FOUND", {
         phase: "RESERVATION",
         metadata: { reason: "terminal resolver returned no terminal" },
@@ -211,11 +225,17 @@ export class POSIntegrationAdapter {
     }
 
     return {
-      pos_direct_print_terminal_id: resolved.pos_direct_print_terminal_id,
-      pos_direct_print_idempotency_key:
-        resolved.pos_direct_print_idempotency_key ||
-        this._defaultIdempotencyKey(summary, settings, resolved),
-      paired_client_id: resolved.paired_client_id || this._pairedClientId(),
+      pos_direct_print_terminal_id: terminal.pos_direct_print_terminal_id,
+      pos_direct_print_transport: terminal.pos_direct_print_transport || null,
+      pos_direct_print_driver_key: terminal.pos_direct_print_driver_key || null,
+      pos_direct_print_paper_width_mm:
+        terminal.pos_direct_print_paper_width_mm || null,
+      pos_direct_print_idempotency_key: this._defaultIdempotencyKey(
+        summary,
+        settings,
+        terminal
+      ),
+      paired_client_id: this._pairedClientId(),
     };
   }
 
@@ -244,7 +264,12 @@ export class POSIntegrationAdapter {
       company,
       pos_profile
     );
-    return { pos_direct_print_terminal_id: projection.terminal_id };
+    return {
+      pos_direct_print_terminal_id: projection.terminal_id,
+      pos_direct_print_transport: projection.transport,
+      pos_direct_print_driver_key: projection.driver_key,
+      pos_direct_print_paper_width_mm: projection.paper_width_mm,
+    };
   }
 
   _defaultIdempotencyKey(summary, settings, resolved) {
