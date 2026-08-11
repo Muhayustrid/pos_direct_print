@@ -18,6 +18,7 @@ from pos_direct_print.core.projections import (
 	terminal_runtime_projection,
 )
 from pos_direct_print.core.receipt_hash import hash_receipt
+from pos_direct_print.core.retry import evaluate_auto_retry
 from pos_direct_print.core.security import user_scopes
 from pos_direct_print.core.state_machine import check_transition
 
@@ -147,6 +148,36 @@ def reserve_print_job(
 
 
 @frappe.whitelist()
+def re_reserve_job(job_id, initiator):
+	"""Server-side safe-retry re-reservation (B-AC-01 retry cycle).
+
+	A FAILED_SAFE Job keeps the reservation owner from its first cycle, and
+	that owner is never visible through projections (A.31.9 Level 1), so a
+	retry cannot present the original owner to a guarded transition. This
+	endpoint runs the retry decision and then starts a NEW reservation cycle
+	atomically: FAILED_SAFE -> RESERVED with a fresh server-minted owner
+	distinct from the retry initiator. The initiator is audit metadata only
+	and is never minted as a reservation token.
+
+	Returns the same reservation payload shape as reserve_print_job, so the
+	client treats the retry exactly like a fresh reservation. The new owner
+	never leaves the server except inside the returned reservation_token.
+	"""
+	user = frappe.session.user
+	job = _scoped_job(job_id, user)
+	decision = evaluate_auto_retry(job.name)
+	if not decision["allowed"]:
+		frappe.throw(
+			_("{0}: safe retry is denied for Job {1}.").format(decision["reason"], job.name),
+			exc=frappe.ValidationError,
+		)
+	max_retries = frappe.get_single("POS Print Settings").max_safe_auto_retries or 0
+	owner = f"RETRY-{frappe.generate_hash(length=24)}"
+	reserved = reservation_service.reserve_safe_retry(job.name, owner, max_retries)
+	return _reservation_payload(reserved)
+
+
+@frappe.whitelist()
 def start_attempt(job_id, reservation_token, terminal_id=None):
 	user = frappe.session.user
 	_scoped_job(job_id, user)
@@ -191,7 +222,14 @@ def bind_receipt_snapshot(job_id, reservation_token, receipt_snapshot, receipt_h
 			_("PDP_RECEIPT_INVALID: receipt snapshot must be schema version 1."),
 			exc=frappe.ValidationError,
 		)
-	if hash_receipt(document) != receipt_hash:
+	try:
+		computed_hash = hash_receipt(document)
+	except (TypeError, UnicodeEncodeError):
+		frappe.throw(
+			_("PDP_RECEIPT_INVALID: receipt snapshot contains unsupported values."),
+			exc=frappe.ValidationError,
+		)
+	if computed_hash != receipt_hash:
 		frappe.throw(
 			_("PDP_RECEIPT_INVALID: receipt hash does not match the snapshot."),
 			exc=frappe.ValidationError,

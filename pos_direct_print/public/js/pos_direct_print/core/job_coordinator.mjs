@@ -70,6 +70,15 @@ export class JobCoordinator {
   }
 
   /**
+   * Server-side safe-retry re-reservation. Mints a fresh reservation token
+   * atomically so the retry cycle gets a valid owner without the client ever
+   * needing the original (projection-hidden) reservation_owner.
+   */
+  async reReserve({ job_id, initiator }) {
+    return this.api.reReserveJob({ job_id, initiator });
+  }
+
+  /**
    * Atomic optimistic transition. The client pre-validates the pair against
    * the transition table, then lets the server's guarded UPDATE decide the
    * race; a stale expectation surfaces as PDP_JOB_CONFLICT.

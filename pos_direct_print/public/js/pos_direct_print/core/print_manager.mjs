@@ -137,15 +137,17 @@ export class PrintManager {
     };
 
     try {
-      // Re-reserve the SAME Job (FAILED_SAFE -> RESERVED), then run the
-      // standard attempt cycle with the original receipt snapshot.
-      const re_reserved = await this.coordinator.transition({
+      // Server-side safe-retry re-reservation: FAILED_SAFE -> RESERVED with a
+      // fresh server-minted owner. The original reservation_owner is hidden
+      // from projections (A.31.9 Level 1) and remains unchanged from the first
+      // cycle, so no client-known token could pass a guarded transition — the
+      // dedicated endpoint mints a new reservation cycle instead. The initiator
+      // is audit metadata only and is never used as a token.
+      const re_reserved = await this.coordinator.reReserve({
         job_id,
-        expected_from_state: "FAILED_SAFE",
-        target_state: "RESERVED",
-        reservation_token: initiator,
+        initiator,
       });
-      state.reservation_token = re_reserved.reservation_owner || initiator;
+      state.reservation_token = re_reserved.reservation_token;
       state.current = "RESERVED";
 
       const receipt = this.fetchReceipt

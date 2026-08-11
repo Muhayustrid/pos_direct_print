@@ -8,6 +8,7 @@ from pos_direct_print.core.print_api import (
 	bind_receipt_snapshot,
 	complete_attempt,
 	get_settings,
+	re_reserve_job,
 	release_reservation,
 	reserve_print_job,
 	resolve_terminal,
@@ -327,6 +328,132 @@ class TestBindReceiptSnapshot(IntegrationTestCase):
 		for projection in (retrieved, transitioned):
 			self.assertNotIn("receipt_snapshot", projection)
 			self.assertNotIn("receipt_hash", projection)
+
+	def test_lone_surrogate_snapshot_raises_receipt_invalid(self):
+		"""Fix round 1: canonicalize escapes a lone surrogate (json.dumps
+		ensure_ascii=False succeeds), so the UnicodeEncodeError must come from
+		hash_receipt's utf-16-le encode and be wrapped into PDP_RECEIPT_INVALID.
+		The hash value is a placeholder: the server must reject the snapshot
+		before it can compare hashes."""
+		self.reservation = self._reserve()
+		snapshot = {**self.snapshot, "reference_name": "POS-INV-" + chr(0xD800)}
+		kwargs = {
+			"job_id": self.reservation["job_id"],
+			"reservation_token": self.reservation["reservation_token"],
+			"receipt_snapshot": json.dumps(snapshot),
+			"receipt_hash": "pdpr1:0000000000000000",
+		}
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**kwargs)
+		self.assertIn("PDP_RECEIPT_INVALID", str(ctx.exception))
+
+
+class TestReReserveJob(IntegrationTestCase):
+	"""Fix round 1 — server-side safe-retry re-reservation. The FAILED_SAFE Job
+	keeps its original reservation_owner, which is hidden from projections, so a
+	retry can never present it. re_reserve_job mints a NEW server-side owner for
+	the retry cycle; the initiator is audit metadata and never a token."""
+
+	def setUp(self):
+		self.operator = _user_with_role("rereserve.op@example.test", "POS Print Operator")
+		_pos_profile_grant_user(OUTLET_A, self.operator)
+		self.terminal = _terminal(OUTLET_A)
+
+	def _reserve(self):
+		with _user(self.operator):
+			return reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"rereserve-idem-{uuid.uuid4().hex[:8]}",
+			)
+
+	def _drive_to_failed_safe(self, reservation):
+		with _user(self.operator):
+			started = start_attempt(
+				job_id=reservation["job_id"],
+				reservation_token=reservation["reservation_token"],
+			)
+			# The safe-retry decision requires a latest Attempt classified AUTO_SAFE
+			# with no content risk.
+			frappe.db.set_value(
+				"POS Print Attempt", started["attempt"]["attempt_id"], "retry_class", "AUTO_SAFE"
+			)
+			complete_attempt(attempt_id=started["attempt"]["attempt_id"], outcome="FAILED_SAFE")
+			transition_job(
+				job_id=reservation["job_id"],
+				expected_from_state="PREFLIGHT",
+				target_state="FAILED_SAFE",
+				reservation_token=reservation["reservation_token"],
+			)
+		frappe.db.commit()
+
+	def test_rereserve_mints_fresh_owner_distinct_from_initiator(self):
+		reservation = self._reserve()
+		self._drive_to_failed_safe(reservation)
+
+		with _user(self.operator):
+			payload = re_reserve_job(reservation["job_id"], initiator=self.operator)
+
+		self.assertEqual(payload["job_id"], reservation["job_id"])
+		self.assertEqual(payload["status"], "RESERVED")
+		self.assertNotEqual(payload["reservation_token"], reservation["reservation_token"])
+		self.assertNotEqual(payload["reservation_token"], self.operator)
+		self.assertTrue(payload["reservation_token"].startswith("RETRY-"))
+
+		job = frappe.get_doc("POS Print Job", reservation["job_id"])
+		self.assertEqual(job.reservation_owner, payload["reservation_token"])
+		self.assertEqual(job.safe_retry_count, 1)
+
+	def test_original_owner_no_longer_matches_after_rereserve(self):
+		reservation = self._reserve()
+		self._drive_to_failed_safe(reservation)
+		old_token = reservation["reservation_token"]
+
+		with _user(self.operator):
+			payload = re_reserve_job(reservation["job_id"], initiator=self.operator)
+
+		# The old token must fail every guarded mutation now.
+		with self.assertRaises(frappe.ValidationError):
+			start_attempt(
+				job_id=reservation["job_id"],
+				reservation_token=old_token,
+			)
+		with _user(self.operator):
+			# The fresh token starts the retry attempt instead.
+			started = start_attempt(
+				job_id=reservation["job_id"],
+				reservation_token=payload["reservation_token"],
+			)
+		self.assertEqual(started["job"]["status"], "PREFLIGHT")
+
+	def test_rereserve_denied_when_not_failed_safe(self):
+		reservation = self._reserve()
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			with _user(self.operator):
+				re_reserve_job(reservation["job_id"], initiator=self.operator)
+		self.assertIn("PDP_JOB_INVALID_TRANSITION", str(ctx.exception))
+
+	def test_rereserve_respects_retry_limit(self):
+		reservation = self._reserve()
+		self._drive_to_failed_safe(reservation)
+		max_retries = frappe.get_single("POS Print Settings").max_safe_auto_retries or 0
+		frappe.db.set_value("POS Print Job", reservation["job_id"], "safe_retry_count", max_retries)
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			with _user(self.operator):
+				re_reserve_job(reservation["job_id"], initiator=self.operator)
+		self.assertIn("PDP_JOB_CONFLICT", str(ctx.exception))
+
+	def test_rereserve_out_of_scope_denied(self):
+		reservation = self._reserve()
+		self._drive_to_failed_safe(reservation)
+		other = _user_with_role("rereserve.op2@example.test", "POS Print Operator")
+		with self.assertRaises(frappe.PermissionError):
+			with _user(other):
+				re_reserve_job(reservation["job_id"], initiator=other)
 
 
 class TestResolveTerminalForProfile(IntegrationTestCase):

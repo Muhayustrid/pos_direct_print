@@ -65,10 +65,36 @@ class InMemoryApi {
     };
   }
 
-  async startAttempt({ job_id }) {
+  async reReserveJob({ job_id, initiator }) {
+    const job = this.jobs.get(job_id);
+    if (job.status !== "FAILED_SAFE") {
+      throw new Error(
+        `PDP_JOB_CONFLICT: expected FAILED_SAFE, is ${job.status}`
+      );
+    }
+    const owner = `RETRY-${++this.sequence}`;
+    if (owner === initiator) {
+      throw new Error(
+        "PDP_JOB_CONFLICT: retry owner must differ from initiator"
+      );
+    }
+    job.reservation_owner = owner;
+    job.status = "RESERVED";
+    return {
+      job_id,
+      reservation_token: owner,
+      reserved_until: null,
+      status: job.status,
+    };
+  }
+
+  async startAttempt({ job_id, reservation_token }) {
     const job = this.jobs.get(job_id);
     if (job.status !== "RESERVED") {
       throw new Error(`PDP_JOB_CONFLICT: expected RESERVED, is ${job.status}`);
+    }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
     }
     job.status = "PREFLIGHT";
     const attempt_no =
@@ -85,17 +111,30 @@ class InMemoryApi {
     return { job: { status: job.status }, attempt };
   }
 
-  async bindReceiptSnapshot({ job_id, receipt_snapshot, receipt_hash }) {
+  async bindReceiptSnapshot({
+    job_id,
+    reservation_token,
+    receipt_snapshot,
+    receipt_hash,
+  }) {
     const job = this.jobs.get(job_id);
     if (job.status !== "RESERVED") {
       throw new Error(`PDP_JOB_CONFLICT: expected RESERVED, is ${job.status}`);
+    }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
     }
     job.receipt_snapshot = receipt_snapshot;
     job.receipt_hash = receipt_hash;
     return { status: job.status };
   }
 
-  async transitionJob({ job_id, expected_from_state, target_state }) {
+  async transitionJob({
+    job_id,
+    expected_from_state,
+    target_state,
+    reservation_token,
+  }) {
     const job = this.jobs.get(job_id);
     if (!VALID_TRANSITIONS.has(`${expected_from_state}->${target_state}`)) {
       throw new Error(
@@ -106,6 +145,9 @@ class InMemoryApi {
       throw new Error(
         `PDP_JOB_CONFLICT: expected ${expected_from_state}, is ${job.status}`
       );
+    }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
     }
     job.status = target_state;
     return { status: job.status };

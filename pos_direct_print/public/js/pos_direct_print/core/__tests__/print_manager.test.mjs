@@ -66,11 +66,14 @@ class InMemoryApi {
     };
   }
 
-  async startAttempt({ job_id }) {
+  async startAttempt({ job_id, reservation_token }) {
     this.events.push("beginAttempt");
     const job = this.jobs.get(job_id);
     if (job.status !== "RESERVED") {
       throw new Error(`PDP_JOB_CONFLICT: expected RESERVED, is ${job.status}`);
+    }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
     }
     job.status = "PREFLIGHT";
     const attempt_no =
@@ -85,6 +88,30 @@ class InMemoryApi {
     };
     this.attempts.set(attempt.attempt_id, attempt);
     return { job: { status: job.status }, attempt };
+  }
+
+  async reReserveJob({ job_id, initiator }) {
+    this.events.push("reReserve");
+    const job = this.jobs.get(job_id);
+    if (job.status !== "FAILED_SAFE") {
+      throw new Error(
+        `PDP_JOB_CONFLICT: expected FAILED_SAFE, is ${job.status}`
+      );
+    }
+    const owner = `RETRY-${++this.sequence}`;
+    if (owner === initiator) {
+      throw new Error(
+        "PDP_JOB_CONFLICT: retry owner must differ from initiator"
+      );
+    }
+    job.reservation_owner = owner;
+    job.status = "RESERVED";
+    return {
+      job_id,
+      reservation_token: owner,
+      reserved_until: null,
+      status: job.status,
+    };
   }
 
   async bindReceiptSnapshot({
@@ -105,6 +132,9 @@ class InMemoryApi {
     if (job.status !== "RESERVED") {
       throw new Error(`PDP_JOB_CONFLICT: expected RESERVED, is ${job.status}`);
     }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
+    }
     if (this.fail_bind) {
       throw new Error("PDP_JOB_CONFLICT: bind failed");
     }
@@ -113,7 +143,12 @@ class InMemoryApi {
     return { status: job.status };
   }
 
-  async transitionJob({ job_id, expected_from_state, target_state }) {
+  async transitionJob({
+    job_id,
+    expected_from_state,
+    target_state,
+    reservation_token,
+  }) {
     this.transitions.push({ job_id, expected_from_state, target_state });
     this.events.push(`transition:${target_state}`);
     const job = this.jobs.get(job_id);
@@ -126,6 +161,9 @@ class InMemoryApi {
       throw new Error(
         `PDP_JOB_CONFLICT: expected ${expected_from_state}, is ${job.status}`
       );
+    }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
     }
     job.status = target_state;
     return { status: job.status };
@@ -389,6 +427,7 @@ test("retryJob re-runs the cycle and re-reserves FAILED_SAFE->RESERVED", async (
   settings.driver_script.print_behavior = "succeed";
   trace.length = 0;
   const transitions_before = api.transitions.length;
+  const events_before = api.events.length;
 
   const retried = await manager.retryJob(
     failed.job_id,
@@ -399,10 +438,14 @@ test("retryJob re-runs the cycle and re-reserves FAILED_SAFE->RESERVED", async (
   assert.equal(retried.status, "SUCCEEDED");
   assert.equal(retried.success, true);
   assert.equal(retried.job_id, failed.job_id, "same Job, never a new one");
+  assert.ok(
+    api.events.slice(events_before).includes("reReserve"),
+    "retry re-reserves server-side instead of a FAILED_SAFE->RESERVED transition"
+  );
   const new_transitions = api.transitions.slice(transitions_before);
   assert.deepEqual(
     new_transitions.map((t) => t.expected_from_state),
-    ["FAILED_SAFE", "PREFLIGHT", "PRINTING", "VERIFYING"]
+    ["PREFLIGHT", "PRINTING", "VERIFYING"]
   );
   assert.deepEqual(trace, ["detect", "initialize", "getStatus", "print"]);
   const attempts = [...api.attempts.values()].filter(
@@ -443,6 +486,44 @@ test("bind failure settles FAILED_SAFE and creates no attempt", async () => {
   assert.ok(outcome.error.code.includes("PDP_JOB_CONFLICT"));
   assert.ok(!api.events.includes("beginAttempt"), "no attempt created");
   assert.equal([...api.attempts.values()].length, 0);
+});
+
+test("retry re-reserve rejects wrong token but accepts initiator-distinct fresh token", async () => {
+  const settings = {
+    driver_script: { print_behavior: "fail_before_content" },
+  };
+  const { api, manager } = makeFoundation(settings);
+  const failed = await request(manager);
+  assert.equal(failed.status, "FAILED_SAFE");
+  const first_attempt = await api.lastAttemptFor(failed.job_id);
+  first_attempt.retry_class = "AUTO_SAFE";
+
+  const old_owner = api.jobs.get(failed.job_id).reservation_owner;
+  const re_reserved = await api.reReserveJob({
+    job_id: failed.job_id,
+    initiator: "operator@example.test",
+  });
+  assert.notEqual(re_reserved.reservation_token, "operator@example.test");
+  assert.notEqual(re_reserved.reservation_token, old_owner);
+
+  await assert.rejects(
+    () =>
+      api.startAttempt({
+        job_id: failed.job_id,
+        reservation_token: "wrong-token",
+      }),
+    (error) => error.message.includes("reservation owner mismatch")
+  );
+
+  const started = await api.startAttempt({
+    job_id: failed.job_id,
+    reservation_token: re_reserved.reservation_token,
+  });
+  assert.equal(started.job.status, "PREFLIGHT");
+
+  // Keep manager referenced so this regression remains tied to its retry API
+  // foundation rather than a standalone transport-only check.
+  assert.ok(manager);
 });
 
 test("retryJob with fetchReceipt reuses the bound snapshot and skips bind", async () => {
