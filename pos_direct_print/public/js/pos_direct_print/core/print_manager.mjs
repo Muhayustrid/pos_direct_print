@@ -196,12 +196,7 @@ export class PrintManager {
         metadata: { job_id, status: snapshot.status, reason },
       });
     }
-    return this.coordinator.transition({
-      job_id,
-      expected_from_state: snapshot.status,
-      target_state: "CANCELLED",
-      reservation_token: snapshot.reservation_owner,
-    });
+    return this.coordinator.cancelJob({ job_id, reason });
   }
 
   async fallbackToBrowser(job_id, approved) {
@@ -222,12 +217,7 @@ export class PrintManager {
       });
     }
 
-    return this.coordinator.transition({
-      job_id,
-      expected_from_state: snapshot.status,
-      target_state: "FALLBACK_BROWSER",
-      reservation_token: snapshot.reservation_owner,
-    });
+    return this.coordinator.fallbackToBrowser({ job_id, approved: true });
   }
 
   getJobStatus(job_id) {

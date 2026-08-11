@@ -8,7 +8,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import now_datetime
+from frappe.utils import cint, now_datetime
 
 from pos_direct_print.core import reservation as reservation_service
 from pos_direct_print.core.projections import (
@@ -19,8 +19,8 @@ from pos_direct_print.core.projections import (
 )
 from pos_direct_print.core.receipt_hash import hash_receipt
 from pos_direct_print.core.retry import evaluate_auto_retry
-from pos_direct_print.core.security import user_scopes
-from pos_direct_print.core.state_machine import check_transition
+from pos_direct_print.core.security import operator_pos_profile_is_applicable, user_scopes
+from pos_direct_print.core.state_machine import check_transition, content_risk_retry_class
 
 
 @frappe.whitelist()
@@ -52,14 +52,13 @@ def resolve_terminal_for_profile(company, pos_profile):
 				_("PDP_PERMISSION_DENIED: company is outside your authorized scope."),
 				exc=frappe.PermissionError,
 			)
-		if scopes["manager"] and (not scopes["profiles"] or pos_profile not in scopes["profiles"]):
+		manager_allowed = scopes["manager"] and pos_profile in scopes["profiles"]
+		operator_allowed = scopes["operator"] and operator_pos_profile_is_applicable(
+			user, pos_profile, company
+		)
+		if not (manager_allowed or operator_allowed):
 			frappe.throw(
 				_("PDP_PERMISSION_DENIED: POS Profile is outside your authorized scope."),
-				exc=frappe.PermissionError,
-			)
-		if not (scopes["manager"] or scopes["operator"]):
-			frappe.throw(
-				_("PDP_PERMISSION_DENIED: no print role grants terminal access."),
 				exc=frappe.PermissionError,
 			)
 	name = frappe.db.get_value(
@@ -283,11 +282,14 @@ def complete_attempt(
 	attempt = frappe.get_doc("POS Print Attempt", attempt_id)
 	_scoped_job(attempt.job, user)
 
+	content_started = int(bool(cint(content_started)))
+	content_completed = int(bool(cint(content_completed)))
 	attempt.db_set(
 		{
 			"outcome": outcome,
-			"content_started": int(bool(content_started)),
-			"content_completed": int(bool(content_completed)),
+			"content_started": content_started,
+			"content_completed": content_completed,
+			"retry_class": _attempt_retry_class(error_code, content_started, content_completed),
 			"error_code": error_code,
 			"error_detail": error_detail,
 			"finished_at": now_datetime(),
@@ -299,6 +301,30 @@ def complete_attempt(
 		job.db_set("content_may_have_printed", 1)
 
 	return outcome_projection(job)
+
+
+@frappe.whitelist()
+def fallback_to_browser(job_id, approved):
+	"""Approve browser handoff without exposing the reservation owner."""
+	if not cint(approved):
+		frappe.throw(
+			_("PDP_PERMISSION_DENIED: explicit browser fallback approval is required."),
+			exc=frappe.PermissionError,
+		)
+	job = _scoped_job(job_id, frappe.session.user)
+	if job.content_may_have_printed:
+		frappe.throw(
+			_("PDP_JOB_CONFLICT: physical content may already have printed."),
+			exc=frappe.ValidationError,
+		)
+	return job_status_projection(_transition_action(job, "FALLBACK_BROWSER"))
+
+
+@frappe.whitelist()
+def cancel_job(job_id, reason=None):
+	"""Cancel a scoped Job through a server-owned guarded transition."""
+	job = _scoped_job(job_id, frappe.session.user)
+	return job_status_projection(_transition_action(job, "CANCELLED"))
 
 
 @frappe.whitelist()
@@ -315,6 +341,34 @@ def release_reservation(job_id, reservation_token, expected_from_state="CREATED"
 def retrieve_job(job_id):
 	job = _scoped_job(job_id, frappe.session.user)
 	return job_status_projection(job)
+
+
+def _attempt_retry_class(error_code, content_started, content_completed):
+	content_class = content_risk_retry_class(content_started, content_completed)
+	if content_class:
+		return content_class
+	if error_code and error_code.startswith(
+		("PDP_TERMINAL_", "PDP_DRIVER_", "PDP_BRIDGE_", "PDP_PRINTER_", "PDP_PRINT_")
+	):
+		return "AUTO_SAFE"
+	if error_code == "PDP_SERVER_UNAVAILABLE":
+		return "AUTO_SAFE"
+	return "NONE"
+
+
+def _transition_action(job, target_state):
+	check_transition(job.status, target_state)
+	affected = frappe.db.execute_query(
+		"UPDATE `tabPOS Print Job` SET `status` = %s WHERE `name` = %s AND `status` = %s",
+		[target_state, job.name, job.status],
+	)
+	if not affected:
+		current = frappe.db.get_value("POS Print Job", job.name, "status")
+		frappe.throw(
+			_("PDP_JOB_CONFLICT: Job {0} expected {1} but is {2}.").format(job.name, job.status, current),
+			exc=frappe.ValidationError,
+		)
+	return frappe.get_doc("POS Print Job", job.name)
 
 
 def _scoped_terminal(terminal_id, user):
@@ -342,19 +396,15 @@ def _scoped_terminal(terminal_id, user):
 			_("PDP_PERMISSION_DENIED: terminal is outside your authorized companies."),
 			exc=frappe.PermissionError,
 		)
-	if scopes["manager"]:
-		if not scopes["profiles"] or terminal.pos_profile not in scopes["profiles"]:
-			frappe.throw(
-				_("PDP_PERMISSION_DENIED: terminal is outside your authorized POS Profile scope."),
-				exc=frappe.PermissionError,
-			)
-		return terminal
-	if scopes["operator"]:
+	manager_allowed = scopes["manager"] and terminal.pos_profile in scopes["profiles"]
+	operator_allowed = scopes["operator"] and operator_pos_profile_is_applicable(
+		user, terminal.pos_profile, terminal.company
+	)
+	if manager_allowed or operator_allowed:
 		return terminal
 
-	# No print role at all — fail closed.
 	frappe.throw(
-		_("PDP_PERMISSION_DENIED: no print role grants terminal access."),
+		_("PDP_PERMISSION_DENIED: terminal is outside your authorized POS Profile scope."),
 		exc=frappe.PermissionError,
 	)
 

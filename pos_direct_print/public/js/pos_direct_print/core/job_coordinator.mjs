@@ -115,6 +115,14 @@ export class JobCoordinator {
     });
   }
 
+  fallbackToBrowser({ job_id, approved }) {
+    return this.api.fallbackToBrowser({ job_id, approved });
+  }
+
+  cancelJob({ job_id, reason }) {
+    return this.api.cancelJob({ job_id, reason });
+  }
+
   /**
    * Release an unfulfilled reservation. Original reservations release to
    * CANCELLED; a safe-retry reservation returns to FAILED_SAFE.

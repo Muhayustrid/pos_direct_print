@@ -153,6 +153,32 @@ class InMemoryApi {
     return { status: job.status };
   }
 
+  async fallbackToBrowser({ job_id, approved }) {
+    const job = this.jobs.get(job_id);
+    if (!approved) {
+      throw new Error("PDP_PERMISSION_DENIED: explicit approval required");
+    }
+    if (job.content_may_have_printed) {
+      throw new Error("PDP_JOB_CONFLICT: physical content may have printed");
+    }
+    if (!VALID_TRANSITIONS.has(`${job.status}->FALLBACK_BROWSER`)) {
+      throw new Error(
+        `PDP_JOB_INVALID_TRANSITION: ${job.status}->FALLBACK_BROWSER`
+      );
+    }
+    job.status = "FALLBACK_BROWSER";
+    return { status: job.status };
+  }
+
+  async cancelJob({ job_id }) {
+    const job = this.jobs.get(job_id);
+    if (!VALID_TRANSITIONS.has(`${job.status}->CANCELLED`)) {
+      throw new Error(`PDP_JOB_INVALID_TRANSITION: ${job.status}->CANCELLED`);
+    }
+    job.status = "CANCELLED";
+    return { status: job.status };
+  }
+
   async completeAttempt({ attempt_id, outcome, content_started }) {
     const attempt = this.attempts.get(attempt_id);
     attempt.outcome = outcome;

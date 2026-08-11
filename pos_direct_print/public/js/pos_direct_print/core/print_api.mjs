@@ -19,6 +19,8 @@ export const OPERATIONS = Object.freeze({
   BIND_RECEIPT_SNAPSHOT: `${MODULE}.bind_receipt_snapshot`,
   TRANSITION_JOB: `${MODULE}.transition_job`,
   COMPLETE_ATTEMPT: `${MODULE}.complete_attempt`,
+  FALLBACK_TO_BROWSER: `${MODULE}.fallback_to_browser`,
+  CANCEL_JOB: `${MODULE}.cancel_job`,
   RELEASE_RESERVATION: `${MODULE}.release_reservation`,
   RETRIEVE_JOB: `${MODULE}.retrieve_job`,
 });
@@ -34,6 +36,8 @@ const OPERATION_PHASES = Object.freeze({
   [OPERATIONS.BIND_RECEIPT_SNAPSHOT]: "RECEIPT",
   [OPERATIONS.TRANSITION_JOB]: "PRINT",
   [OPERATIONS.COMPLETE_ATTEMPT]: "VERIFY",
+  [OPERATIONS.FALLBACK_TO_BROWSER]: "FALLBACK",
+  [OPERATIONS.CANCEL_JOB]: "RESERVATION",
   [OPERATIONS.RELEASE_RESERVATION]: "RESERVATION",
   [OPERATIONS.RETRIEVE_JOB]: "RESERVATION",
 });
@@ -109,6 +113,17 @@ export class PrintApi {
 
   completeAttempt(payload) {
     return this._invoke(OPERATIONS.COMPLETE_ATTEMPT, payload);
+  }
+
+  fallbackToBrowser({ job_id, approved }) {
+    return this._invoke(OPERATIONS.FALLBACK_TO_BROWSER, {
+      job_id,
+      approved: approved ? 1 : 0,
+    });
+  }
+
+  cancelJob({ job_id, reason }) {
+    return this._invoke(OPERATIONS.CANCEL_JOB, { job_id, reason });
   }
 
   releaseReservation({ job_id, reservation_token, expected_from_state }) {

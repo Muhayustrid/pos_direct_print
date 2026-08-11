@@ -6,7 +6,9 @@ from frappe.tests import IntegrationTestCase
 
 from pos_direct_print.core.print_api import (
 	bind_receipt_snapshot,
+	cancel_job,
 	complete_attempt,
+	fallback_to_browser,
 	get_settings,
 	re_reserve_job,
 	release_reservation,
@@ -126,6 +128,13 @@ class TestPrintApiTransport(IntegrationTestCase):
 				resolve_terminal(self.terminal_b)
 		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
 
+	def test_operator_outside_applicable_terminal_rejected(self):
+		other = _user_with_role("api.other@example.test", "POS Print Operator")
+		with _user(other):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal(self.terminal)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
 	def test_attempt_lifecycle_through_transport(self):
 		with _user(self.operator):
 			reservation = reserve_print_job(
@@ -154,6 +163,94 @@ class TestPrintApiTransport(IntegrationTestCase):
 
 			released = retrieve_job(reservation["job_id"])
 			self.assertEqual(released["status"], "PREFLIGHT")
+
+	def test_complete_attempt_derives_retry_class_server_side(self):
+		with _user(self.operator):
+			reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			started = start_attempt(
+				job_id=reservation["job_id"], reservation_token=reservation["reservation_token"]
+			)
+			complete_attempt(
+				attempt_id=started["attempt"]["attempt_id"],
+				outcome="FAILED_SAFE",
+				error_code="PDP_BRIDGE_UNAVAILABLE",
+			)
+		self.assertEqual(
+			frappe.db.get_value("POS Print Attempt", started["attempt"]["attempt_id"], "retry_class"),
+			"AUTO_SAFE",
+		)
+
+	def test_complete_attempt_content_risk_overrides_error_category(self):
+		with _user(self.operator):
+			reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			started = start_attempt(
+				job_id=reservation["job_id"], reservation_token=reservation["reservation_token"]
+			)
+			complete_attempt(
+				attempt_id=started["attempt"]["attempt_id"],
+				outcome="UNCERTAIN",
+				content_started=1,
+				error_code="PDP_PRINTER_NOT_READY",
+			)
+		self.assertEqual(
+			frappe.db.get_value("POS Print Attempt", started["attempt"]["attempt_id"], "retry_class"),
+			"REPRINT_ONLY",
+		)
+
+	def test_server_lifecycle_actions_do_not_require_exposed_owner(self):
+		with _user(self.operator):
+			fallback_reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			transition_job(
+				job_id=fallback_reservation["job_id"],
+				expected_from_state="RESERVED",
+				target_state="FAILED_SAFE",
+				reservation_token=fallback_reservation["reservation_token"],
+			)
+			fallback = fallback_to_browser(fallback_reservation["job_id"], approved=1)
+			self.assertEqual(fallback["status"], "FALLBACK_BROWSER")
+
+			cancel_reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			cancelled = cancel_job(cancel_reservation["job_id"], reason="operator cancel")
+			self.assertEqual(cancelled["status"], "CANCELLED")
+
+	def test_fallback_requires_approval_and_rejects_content_risk(self):
+		with _user(self.operator):
+			reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			with self.assertRaises(frappe.PermissionError):
+				fallback_to_browser(reservation["job_id"], approved=0)
+			frappe.db.set_value("POS Print Job", reservation["job_id"], "content_may_have_printed", 1)
+			with self.assertRaises(frappe.ValidationError):
+				fallback_to_browser(reservation["job_id"], approved=1)
 
 	def test_transition_job_rejects_invalid_transition(self):
 		with _user(self.operator):
@@ -376,12 +473,11 @@ class TestReReserveJob(IntegrationTestCase):
 				job_id=reservation["job_id"],
 				reservation_token=reservation["reservation_token"],
 			)
-			# The safe-retry decision requires a latest Attempt classified AUTO_SAFE
-			# with no content risk.
-			frappe.db.set_value(
-				"POS Print Attempt", started["attempt"]["attempt_id"], "retry_class", "AUTO_SAFE"
+			complete_attempt(
+				attempt_id=started["attempt"]["attempt_id"],
+				outcome="FAILED_SAFE",
+				error_code="PDP_BRIDGE_UNAVAILABLE",
 			)
-			complete_attempt(attempt_id=started["attempt"]["attempt_id"], outcome="FAILED_SAFE")
 			transition_job(
 				job_id=reservation["job_id"],
 				expected_from_state="PREFLIGHT",
@@ -489,6 +585,14 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 		self.assertNotIn("device_serial", projection)
 		self.assertNotIn("pairing_status", projection)
 
+	def test_operator_outside_applicable_profile_rejected(self):
+		other = _user_with_role("profile.other@example.test", "POS Print Operator")
+		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		with _user(other):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
 	def test_manager_without_pos_profile_scope_rejected(self):
 		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
 		with _user(self.manager_none):
@@ -558,20 +662,27 @@ class _user:
 
 def _user_with_role(email, role):
 	if frappe.db.exists("User", email):
-		frappe.delete_doc("User", email, force=True)
-	user = frappe.get_doc(
-		{
-			"doctype": "User",
-			"email": email,
-			"first_name": email.split("@")[0],
-			"send_welcome_email": 0,
-		}
-	).insert(ignore_permissions=True)
-	user.add_roles(role)
+		user = frappe.get_doc("User", email)
+	else:
+		user = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": email.split("@")[0],
+				"send_welcome_email": 0,
+			}
+		).insert(ignore_permissions=True)
+	if role not in {row.role for row in user.roles}:
+		user.add_roles(role)
 	return user.name
 
 
 def _user_permission(user, allow, for_value):
+	if frappe.db.exists(
+		"User Permission",
+		{"user": user, "allow": allow, "for_value": for_value},
+	):
+		return
 	frappe.get_doc(
 		{
 			"doctype": "User Permission",
