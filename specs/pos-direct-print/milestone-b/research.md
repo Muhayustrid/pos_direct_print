@@ -640,30 +640,19 @@ No remaining Category A blocker exists.
 | Printer firmware version | optional evidence |
 | Extra timing metrics | optional evidence |
 
-## 13.5 SDK asset pin
+### 13.5 SDK asset pin — B1-01 complete
 
-B1 owns the SDK asset pin. The pin is a B1 implementation prerequisite, not a documentation blocker.
-
-Candidate based on the local inventory:
-
-- primary candidate: `docs/iMinJSPrinterSDK/v1/js-demo/html-demo/imin-printer.js`, UMD build, version 1.4.0, global `IminPrinter`, matches plain browser script loading;
-- alternative: `docs/iMinJSPrinterSDK/v1/vue-demo/vue2-demo/src/assets/imin-printer.esm.browser.js`, same version, ESM, different `printText` clamping and extra `partialCutPaper`;
-- alternative: the uni-app fork inside `docs/iMinJSPrinterSDK/v1/uni-app-demo/`, version `1.4.0-uniapp`, guarded init and status timeout, different interface semantics.
-
-B1 must record for the pinned asset: exact file, version, checksum, asset loading strategy, and expected exported API shape. The primary candidate is expected because Milestone B loads a browser script, but the pin decision belongs to B1-01 with the recorded evidence.
-
-Static audit evidence for the current primary candidate at the versioned V1 path:
-
-- version `1.4.0`, MIT banner, UMD export to browser global `window.IminPrinter`;
-- size 29,162 bytes;
-- SHA-256 recomputed from current bytes: `d874f3fa2dafa0a729ae0f8f28b4e76825542f64a95c075692ab203a3503fd9a`;
-- this matches the previous audit digest exactly; only the inventory path changed;
-- `connect()` is Promise-based with an internal five-second timeout;
-- `getPrinterStatus()` is Promise-based and may remain pending without a matching callback, so B-RUN-05's injected timeout is mandatory;
-- initialization, style, text, and feed calls are void/fire-and-forget;
-- the same-directory file named `imin-printer.min.js` is not assumed to be a distinct optimized build; B1 must compare its checksum/content before considering it;
-- browser loading has no required third-party dependency, but the bundle auto-installs itself if `window.Vue` already exists;
-- the SDK hardcodes `ws://` and `http://` local-service transports. HTTPS-served POS compatibility is a physical-environment qualification item because browser mixed-content policy may block the local bridge.
+- source: `docs/iMinJSPrinterSDK/v1/js-demo/html-demo/imin-printer.js`;
+- app-owned asset: `pos_direct_print/public/js/lib/imin/1.4.0/imin-printer.js`;
+- version: `1.4.0`;
+- byte size: `29,162`;
+- SHA-256: `d874f3fa2dafa0a729ae0f8f28b4e76825542f64a95c075692ab203a3503fd9a`;
+- export shape: UMD constructor at `window.IminPrinter`;
+- status interface: `getPrinterStatus(connectType)` returns a Promise;
+- dispatch interface: initialization, style, text, and feed calls are void/fire-and-forget;
+- connect interface: `connect()` returns a Promise and has an internal five-second timeout;
+- production loading: deferred to B4-03. B1 does not add hooks;
+- local `v2/` evidence: byte-identical V1.4.0, not an authoritative V2 implementation.
 
 No file under `docs/` is copied or modified by this decision.
 
