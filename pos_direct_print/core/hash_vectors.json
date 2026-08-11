@@ -1,0 +1,129 @@
+{
+  "vectors": [
+    {
+      "name": "minimal-idr-integer",
+      "receipt": {
+        "schema_version": 1,
+        "reference_doctype": "POS Invoice",
+        "reference_name": "POS-INV-0001",
+        "locale": "id-ID",
+        "currency": "IDR",
+        "paper_profile": "58mm",
+        "blocks": [
+          {
+            "type": "TEXT",
+            "text": "TOTAL 1000"
+          }
+        ],
+        "metadata": {}
+      },
+      "canonical": "{\"blocks\":[{\"text\":\"TOTAL 1000\",\"type\":\"TEXT\"}],\"currency\":\"IDR\",\"locale\":\"id-ID\",\"metadata\":{},\"paper_profile\":\"58mm\",\"reference_doctype\":\"POS Invoice\",\"reference_name\":\"POS-INV-0001\",\"schema_version\":1}",
+      "hash": "pdpr1:4fd5c2c66263ae23"
+    },
+    {
+      "name": "non-integer-amount",
+      "receipt": {
+        "schema_version": 1,
+        "reference_doctype": "POS Invoice",
+        "reference_name": "POS-INV-0002",
+        "locale": "id-ID",
+        "currency": "IDR",
+        "paper_profile": "58mm",
+        "blocks": [
+          {
+            "type": "COLUMNS",
+            "amount": 1.5
+          }
+        ],
+        "metadata": {}
+      },
+      "canonical": "{\"blocks\":[{\"amount\":1.5,\"type\":\"COLUMNS\"}],\"currency\":\"IDR\",\"locale\":\"id-ID\",\"metadata\":{},\"paper_profile\":\"58mm\",\"reference_doctype\":\"POS Invoice\",\"reference_name\":\"POS-INV-0002\",\"schema_version\":1}",
+      "hash": "pdpr1:296a55854f58c1f3"
+    },
+    {
+      "name": "non-ascii-strings",
+      "receipt": {
+        "schema_version": 1,
+        "reference_doctype": "POS Invoice",
+        "reference_name": "Té",
+        "locale": "id-ID",
+        "currency": "IDR",
+        "paper_profile": "58mm",
+        "blocks": [
+          {
+            "type": "TEXT",
+            "text": "Rp 1.500"
+          }
+        ],
+        "metadata": {}
+      },
+      "canonical": "{\"blocks\":[{\"text\":\"Rp 1.500\",\"type\":\"TEXT\"}],\"currency\":\"IDR\",\"locale\":\"id-ID\",\"metadata\":{},\"paper_profile\":\"58mm\",\"reference_doctype\":\"POS Invoice\",\"reference_name\":\"Té\",\"schema_version\":1}",
+      "hash": "pdpr1:c14059e42ff4e293"
+    },
+    {
+      "name": "empty-blocks",
+      "receipt": {
+        "schema_version": 1,
+        "reference_doctype": "POS Invoice",
+        "reference_name": "POS-INV-0004",
+        "locale": "id-ID",
+        "currency": "IDR",
+        "paper_profile": "58mm",
+        "blocks": [],
+        "metadata": {}
+      },
+      "canonical": "{\"blocks\":[],\"currency\":\"IDR\",\"locale\":\"id-ID\",\"metadata\":{},\"paper_profile\":\"58mm\",\"reference_doctype\":\"POS Invoice\",\"reference_name\":\"POS-INV-0004\",\"schema_version\":1}",
+      "hash": "pdpr1:b83c2222775c1909"
+    },
+    {
+      "name": "nested-metadata",
+      "receipt": {
+        "schema_version": 1,
+        "reference_doctype": "POS Invoice",
+        "reference_name": "POS-INV-0005",
+        "locale": "id-ID",
+        "currency": "IDR",
+        "paper_profile": "58mm",
+        "blocks": [
+          {
+            "type": "TEXT",
+            "text": "nested"
+          }
+        ],
+        "metadata": {
+          "audit": {
+            "source": "fixture",
+            "details": {
+              "version": 1
+            }
+          }
+        }
+      },
+      "canonical": "{\"blocks\":[{\"text\":\"nested\",\"type\":\"TEXT\"}],\"currency\":\"IDR\",\"locale\":\"id-ID\",\"metadata\":{\"audit\":{\"details\":{\"version\":1},\"source\":\"fixture\"}},\"paper_profile\":\"58mm\",\"reference_doctype\":\"POS Invoice\",\"reference_name\":\"POS-INV-0005\",\"schema_version\":1}",
+      "hash": "pdpr1:4ddb591814e22a63"
+    },
+    {
+      "name": "metadata-boolean-null",
+      "receipt": {
+        "schema_version": 1,
+        "reference_doctype": "POS Invoice",
+        "reference_name": "POS-INV-0006",
+        "locale": "id-ID",
+        "currency": "IDR",
+        "paper_profile": "58mm",
+        "blocks": [
+          {
+            "type": "TEXT",
+            "text": "flags"
+          }
+        ],
+        "metadata": {
+          "enabled": true,
+          "note": null
+        }
+      },
+      "canonical": "{\"blocks\":[{\"text\":\"flags\",\"type\":\"TEXT\"}],\"currency\":\"IDR\",\"locale\":\"id-ID\",\"metadata\":{\"enabled\":true,\"note\":null},\"paper_profile\":\"58mm\",\"reference_doctype\":\"POS Invoice\",\"reference_name\":\"POS-INV-0006\",\"schema_version\":1}",
+      "hash": "pdpr1:d58dd3efc23f95e9"
+    }
+  ]
+}
