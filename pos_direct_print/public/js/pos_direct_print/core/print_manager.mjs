@@ -359,14 +359,15 @@ export class PrintManager {
       }
       return result;
     } catch (raw) {
-      // Driver threw: normalize, then wrap in a rejected result so the
-      // settlement path stays single.
-      state.driver_error = normalize(raw, state.phase, {
-        content_started: state.content_started,
-      });
+      // A driver that throws after dispatch is authoritative about content
+      // risk; do not let the manager's pre-throw state flatten it in the audit.
+      const content_started =
+        state.content_started || Boolean(raw?.content_may_have_printed);
+      state.content_started = content_started;
+      state.driver_error = normalize(raw, state.phase, { content_started });
       return {
         accepted: false,
-        content_started: state.content_started,
+        content_started,
         content_completed: false,
         verification_supported: false,
         final_status: null,

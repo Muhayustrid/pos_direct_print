@@ -8,6 +8,7 @@ import {
 } from "../imin_v1_driver.mjs";
 import { IminSdkAdapter } from "../imin_sdk_adapter.mjs";
 import { makePaperProfile } from "../../receipt/paper_profiles.mjs";
+import { toUserError } from "../../core/error_normalizer.mjs";
 
 function makeFakeRuntime(script = {}) {
   const instances = [];
@@ -358,4 +359,93 @@ test("detect bridge failure returns normalized error without SDK object", async 
   assert.equal(result.error.code, "PDP_BRIDGE_UNAVAILABLE");
   assert.equal(result.error.cause, null);
   assert.equal(result.error === instances[0], false);
+});
+
+// ---------------------------------------------------------------- Task 8 (B5)
+// Pre-output failures keep content risk false and never dispatch receipt text.
+
+test("B5: bridge unavailable maps to PDP_BRIDGE_UNAVAILABLE without content risk", async () => {
+  const adapter = new IminSdkAdapter({
+    runtime: { WebSocket: undefined, IminPrinter: undefined },
+    timeout_ms: 5000,
+  });
+  const driver = new IminV1Driver({ sdk_adapter: adapter });
+
+  const result = await driver.detect();
+  assert.equal(result.available, false);
+  assert.equal(result.error.code, "PDP_BRIDGE_UNAVAILABLE");
+  assert.equal(result.error.phase, "PREFLIGHT");
+  assert.equal(result.error.content_may_have_printed, false);
+  assert.equal(result.error.metadata.reason, "WEBSOCKET_UNAVAILABLE");
+  assert.equal(result.error.cause, null);
+});
+
+test("B5: initialization failure maps to PDP_PRINTER_NOT_READY without dispatch", async () => {
+  const { adapter, instances } = makeAdapter({ throw_on: "initPrinter" });
+  const driver = new IminV1Driver({ sdk_adapter: adapter });
+
+  await assert.rejects(driver.initialize(), (error) => {
+    assert.equal(error.code, "PDP_PRINTER_NOT_READY");
+    assert.equal(error.phase, "PREFLIGHT");
+    assert.equal(error.content_may_have_printed, false);
+    return true;
+  });
+  assert.equal(instances[0].outbound_commands.length, 0);
+});
+
+test("B5: not-ready raw statuses map to PDP_PRINTER_NOT_READY before dispatch", async () => {
+  for (const raw of [-1, 1, 3, 8, 99]) {
+    const { adapter, instances } = makeAdapter({ status: raw });
+    const driver = new IminV1Driver({ sdk_adapter: adapter });
+    await driver.initialize().catch(() => {});
+
+    await assert.rejects(
+      driver.print(receipt([{ type: "TEXT", text: "nope" }])),
+      (error) => {
+        assert.equal(error.code, "PDP_PRINTER_NOT_READY", `raw=${raw}`);
+        assert.equal(error.phase, "PREFLIGHT", `raw=${raw}`);
+        assert.equal(error.content_may_have_printed, false, `raw=${raw}`);
+        return true;
+      }
+    );
+    assert.equal(
+      instances[0].outbound_commands.length,
+      0,
+      `raw=${raw} dispatched no content`
+    );
+  }
+});
+
+test("B5: toUserError exposes only message keys, code, and actions", async () => {
+  const { adapter } = makeAdapter({ status: 7 });
+  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  await driver.initialize().catch(() => {});
+
+  await assert.rejects(
+    driver.print(receipt([{ type: "TEXT", text: "nope" }])),
+    (error) => {
+      const user_error = toUserError(error);
+      assert.deepEqual(Object.keys(user_error).sort(), [
+        "allowed_actions",
+        "code",
+        "message_key",
+        "title_key",
+      ]);
+      assert.equal(user_error.code, "PDP_PRINTER_PAPER_OUT");
+      assert.deepEqual(user_error.allowed_actions, ["dismiss"]);
+      assert.equal(JSON.stringify(user_error).includes("raw"), false);
+      assert.equal(JSON.stringify(user_error).includes("stack"), false);
+      return true;
+    }
+  );
+});
+
+test("B5: raw status values stay in driver metadata only", () => {
+  const status = mapStatus(7);
+  assert.equal(status.state, "PAPER_OUT");
+  assert.equal(status.raw_code, null);
+  assert.equal(status.raw_message, null);
+  assert.equal(status.metadata.raw_code, 7);
+  assert.equal(JSON.stringify(status).includes('"raw_code":7'), true);
+  assert.equal(JSON.stringify(status).includes('"raw_message"'), true);
 });
