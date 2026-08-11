@@ -26,7 +26,7 @@ app_license = "mit"
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/pos_direct_print/css/pos_direct_print.css"
-# app_include_js = "/assets/pos_direct_print/js/pos_direct_print.js"
+app_include_js = ["pos_direct_print/public/js/pos_direct_print/web/pos_direct_print.js"]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/pos_direct_print/css/pos_direct_print.css"
