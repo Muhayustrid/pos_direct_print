@@ -18,12 +18,40 @@ const loader_source = readFileSync(
   "utf8"
 );
 
-function make_loader_window({ vue } = {}) {
+function make_loader_window({
+  vue,
+  settings,
+  pos_prototype,
+  sdk_event = "load",
+  settings_error = false,
+} = {}) {
   const window = { console };
   window.window = window;
   window.self = window;
   if (vue) window.Vue = vue;
+  if (pos_prototype) {
+    window.erpnext = {
+      PointOfSale: { PastOrderSummary: { prototype: pos_prototype } },
+    };
+  }
+  window.__pos_direct_print_import = () =>
+    Promise.resolve({
+      bootSubsystem({ pos_context }) {
+        pos_context.print_receipt = function intercepted_print_receipt() {};
+      },
+    });
+  window.frappe = {
+    call({ callback, error }) {
+      if (settings_error) {
+        error(new Error("settings failed"));
+        return;
+      }
+      callback({ message: settings || { enabled: true, receipt_schema_version: 1 } });
+    },
+  };
 
+  window.setInterval = setInterval;
+  window.clearInterval = clearInterval;
   const context = vm.createContext(window);
   const evaluate_sdk = vm.runInContext(
     `(function (source) {
@@ -43,7 +71,7 @@ function make_loader_window({ vue } = {}) {
         assert.equal(script.src, SDK_URL);
         sdk_scripts++;
         evaluate_sdk(sdk_source);
-        script.onload();
+        script[sdk_event === "load" ? "onload" : "onerror"]();
       },
     },
   };
@@ -86,6 +114,46 @@ test("loader exposes the SDK when Vue is absent", async () => {
 
   assert.equal(typeof shim.window.IminPrinter, "function");
   await settle_loader();
+});
+
+test("loader restores Vue exactly after SDK onerror and skips boot", async () => {
+  const vue = { use() {} };
+  const shim = make_loader_window({ vue, sdk_event: "onerror" });
+
+  vm.runInContext(loader_source, shim.context);
+
+  assert.equal(shim.window.Vue, vue);
+  await settle_loader();
+});
+
+test("loader skips override when live settings disable direct print", async () => {
+  const prototype = { print_receipt() {} };
+  const shim = make_loader_window({
+    pos_prototype: prototype,
+    settings: { enabled: false, receipt_schema_version: 1 },
+  });
+
+  vm.runInContext(loader_source, shim.context);
+  await settle_loader();
+
+  assert.equal(prototype.print_receipt.name, "print_receipt");
+});
+
+test("loader arms when POS prototype becomes available later", async () => {
+  const prototype = { print_receipt() {} };
+  const original_print = prototype.print_receipt;
+  const shim = make_loader_window();
+
+  vm.runInContext(loader_source, shim.context);
+  shim.window.erpnext = {
+    PointOfSale: { PastOrderSummary: { prototype } },
+  };
+  await new Promise((resolve) => setTimeout(resolve, 550));
+
+  assert.notEqual(
+    shim.window.erpnext.PointOfSale.PastOrderSummary.prototype.print_receipt,
+    original_print
+  );
 });
 
 test("bootSubsystem returns the same result object on repeated calls", () => {

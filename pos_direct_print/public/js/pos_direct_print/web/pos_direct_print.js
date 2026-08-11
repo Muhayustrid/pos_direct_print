@@ -1,14 +1,9 @@
 /**
  * Classic script loader (B4-03) — no static ESM syntax.
  *
- * Loads the pinned iMin SDK, then dynamically imports the ESM bootstrap and
- * registers the `imin_v1` driver against the live ERPNext POS prototype.
- * Every failure is non-fatal: POS keeps its baseline browser print (A-DOD-04).
- *
- * The pinned SDK's UMD tail executes `if (inBrowser && window.Vue)
- * window.Vue.use(IminPrinter);`. Installing an iMin Vue plugin into the Desk
- * Vue app is out of scope, so `window.Vue` is hidden for the evaluation
- * window and restored in `onload` (which fires after script execution).
+ * Loads the pinned iMin SDK, fetches live settings, then dynamically imports
+ * the ESM bootstrap and registers the driver against the live ERPNext POS
+ * prototype. Every failure is non-fatal: POS keeps baseline browser print.
  */
 (function () {
 	if (window.__pos_direct_print_booted) return;
@@ -16,6 +11,7 @@
 
 	var SDK_URL = "/assets/pos_direct_print/js/lib/imin/1.4.0/imin-printer.js";
 	var BOOTSTRAP_URL = "/assets/pos_direct_print/js/pos_direct_print/core/bootstrap.mjs";
+	var SETTINGS_METHOD = "pos_direct_print.core.print_api.get_settings";
 
 	function load_sdk_with_vue_guard() {
 		return new Promise(function (resolve, reject) {
@@ -25,8 +21,6 @@
 				try {
 					window.Vue = undefined;
 				} catch (e) {
-					// ponytail: non-writable window.Vue getter — logged; device gate
-					// confirms real state (C-9)
 					console.warn(
 						"pos_direct_print: could not hide window.Vue; SDK Vue plugin may install"
 					);
@@ -56,42 +50,73 @@
 		});
 	}
 
-	function wait_for_pos_prototype(retries) {
-		// ponytail: bounded polling (500 ms x 30); swap for a frappe router/page
-		// event if one proves reliable
+	function get_pos_prototype() {
+		var constructor =
+			window.erpnext &&
+			window.erpnext.PointOfSale &&
+			window.erpnext.PointOfSale.PastOrderSummary;
+		var prototype = constructor && constructor.prototype;
+		return prototype && typeof prototype.print_receipt === "function"
+			? prototype
+			: null;
+	}
+
+	function get_settings() {
 		return new Promise(function (resolve, reject) {
-			var left = retries;
-			var timer = setInterval(function () {
-				var proto =
-					window.erpnext &&
-					window.erpnext.PointOfSale &&
-					window.erpnext.PointOfSale.PastOrderSummary &&
-					window.erpnext.PointOfSale.PastOrderSummary.prototype;
-				if (proto && typeof proto.print_receipt === "function") {
-					clearInterval(timer);
-					resolve(proto);
-				} else if (--left <= 0) {
-					clearInterval(timer);
-					reject(new Error("PDP_POS_CONTEXT_UNAVAILABLE"));
-				}
-			}, 500);
+			if (!window.frappe || typeof window.frappe.call !== "function") {
+				reject(new Error("PDP_SETTINGS_UNAVAILABLE"));
+				return;
+			}
+			window.frappe.call({
+				method: SETTINGS_METHOD,
+				args: {},
+				callback: function (response) {
+					if (response && response.message) resolve(response.message);
+					else reject(new Error("PDP_SETTINGS_UNAVAILABLE"));
+				},
+				error: function () {
+					reject(new Error("PDP_SETTINGS_UNAVAILABLE"));
+				},
+			});
 		});
+	}
+
+	function load_bootstrap() {
+		if (typeof window.__pos_direct_print_import === "function") {
+			return Promise.resolve(window.__pos_direct_print_import(BOOTSTRAP_URL));
+		}
+		return import(BOOTSTRAP_URL);
+	}
+
+	function arm_when_pos_is_ready(mod, settings) {
+		var armed = false;
+		var left = 30;
+		var timer = setInterval(function () {
+			var prototype = get_pos_prototype();
+			if (!prototype || armed) {
+				if (--left <= 0) clearInterval(timer);
+				return;
+			}
+			armed = true;
+			clearInterval(timer);
+			mod.bootSubsystem({
+				pos_context: prototype,
+				settings: settings,
+				active_driver_key: "imin_v1",
+			});
+		}, 500);
 	}
 
 	load_sdk_with_vue_guard()
 		.then(function () {
-			return import(BOOTSTRAP_URL);
+			return Promise.all([load_bootstrap(), get_settings()]);
 		})
-		.then(function (mod) {
-			return wait_for_pos_prototype(30).then(function (proto) {
-				return mod.bootSubsystem({
-					pos_context: proto,
-					active_driver_key: "imin_v1",
-				});
-			});
+		.then(function (values) {
+			var settings = values[1];
+			if (!settings.enabled) return;
+			arm_when_pos_is_ready(values[0], settings);
 		})
 		.catch(function (error) {
-			// Non-fatal for ERPNext: POS keeps baseline browser print (A-DOD-04).
 			console.warn("pos_direct_print: bootstrap skipped", error && error.message);
 		});
 })();

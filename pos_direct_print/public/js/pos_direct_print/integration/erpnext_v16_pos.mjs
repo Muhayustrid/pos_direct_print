@@ -62,7 +62,10 @@ export class POSIntegrationAdapter {
     }
 
     if (this.override_handle) {
-      return this.override_handle;
+      if (this.override_handle.prototype === prototype) {
+        return this.override_handle;
+      }
+      this.restoreOverride();
     }
 
     const original_method = prototype.print_receipt;
