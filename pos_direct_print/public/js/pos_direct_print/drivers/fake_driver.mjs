@@ -59,10 +59,17 @@ export class FakeDriver extends BaseDriver {
   }
 
   getStatus() {
+    // fail_before_content models a printer that is not ready when the
+    // orchestrator's preflight status check runs (milestone-b §1.6): the
+    // failure is caught at PREFLIGHT, before PREFLIGHT -> PRINTING, so it can
+    // legally settle FAILED_SAFE (PRINTING -> FAILED_SAFE is forbidden, A.17).
+    const ready =
+      this.script.available &&
+      this.script.print_behavior !== "fail_before_content";
     return {
-      state: this.script.available ? "READY" : "DISCONNECTED",
-      ready: this.script.available,
-      blocking: false,
+      state: ready ? "READY" : "DISCONNECTED",
+      ready,
+      blocking: !ready,
       raw_code: null,
       raw_message: null,
       checked_at: null,
@@ -106,7 +113,7 @@ export class FakeDriver extends BaseDriver {
       content_completed: true,
       verification_supported: true,
       final_status: this.getStatus(),
-      metadata: {},
+      metadata: { post_status_checked: true },
     };
   }
 }
