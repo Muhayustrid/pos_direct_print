@@ -20,10 +20,9 @@ export function renderReceiptLines(receipt_document, profile) {
       case "SEPARATOR":
         lines.push({
           kind: "text",
-          text: String(block.char || "-").repeat(paper_profile.logical_width).slice(
-            0,
-            paper_profile.logical_width
-          ),
+          text: String(block.char || "-")
+            .repeat(paper_profile.logical_width)
+            .slice(0, paper_profile.logical_width),
         });
         break;
       case "COLUMNS":

@@ -46,7 +46,9 @@ function make_loader_window({
         error(new Error("settings failed"));
         return;
       }
-      callback({ message: settings || { enabled: true, receipt_schema_version: 1 } });
+      callback({
+        message: settings || { enabled: true, receipt_schema_version: 1 },
+      });
     },
   };
 

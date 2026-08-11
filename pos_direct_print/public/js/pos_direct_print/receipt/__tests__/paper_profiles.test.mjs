@@ -62,7 +62,9 @@ test("receipt renderer preserves block order and emits bold style changes", () =
     (line) => line.kind === "text" && line.text.includes("IDR")
   );
   assert.ok(columnLines.length > 0);
-  assert.ok(columnLines.every((line) => line.text.length === TEST_PROFILE.logical_width));
+  assert.ok(
+    columnLines.every((line) => line.text.length === TEST_PROFILE.logical_width)
+  );
   assert.ok(
     lines
       .filter((line) => line.kind === "text")
@@ -78,10 +80,25 @@ test("receipt renderer preserves block order and emits bold style changes", () =
     ["style", "text", "text", "style"]
   );
   assert.ok(lines.findIndex((line) => line.kind === "feed") > 0);
-  assert.ok(lines.every((line) => line.kind !== "feed" || Object.keys(line).length === 1));
-  assert.ok(lines.every((line) => line.kind !== "style" || typeof line.bold === "boolean"));
-  assert.ok(lines.every((line) => line.kind !== "text" || typeof line.text === "string"));
-  assert.ok(lines.every((line) => line.kind !== "text" || line.text.length <= TEST_PROFILE.logical_width));
+  assert.ok(
+    lines.every(
+      (line) => line.kind !== "feed" || Object.keys(line).length === 1
+    )
+  );
+  assert.ok(
+    lines.every(
+      (line) => line.kind !== "style" || typeof line.bold === "boolean"
+    )
+  );
+  assert.ok(
+    lines.every((line) => line.kind !== "text" || typeof line.text === "string")
+  );
+  assert.ok(
+    lines.every(
+      (line) =>
+        line.kind !== "text" || line.text.length <= TEST_PROFILE.logical_width
+    )
+  );
   assert.ok(lines.some((line) => line.kind === "text" && line.bold === false));
   assert.ok(lines.some((line) => line.kind === "style" && line.bold === true));
   assert.ok(lines.some((line) => line.kind === "style" && line.bold === false));

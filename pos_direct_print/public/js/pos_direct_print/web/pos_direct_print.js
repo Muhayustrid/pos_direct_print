@@ -56,9 +56,7 @@
 			window.erpnext.PointOfSale &&
 			window.erpnext.PointOfSale.PastOrderSummary;
 		var prototype = constructor && constructor.prototype;
-		return prototype && typeof prototype.print_receipt === "function"
-			? prototype
-			: null;
+		return prototype && typeof prototype.print_receipt === "function" ? prototype : null;
 	}
 
 	function get_settings() {

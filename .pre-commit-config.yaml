@@ -9,7 +9,7 @@ repos:
     hooks:
       - id: trailing-whitespace
         files: "pos_direct_print.*"
-        exclude: ".*json$|.*txt$|.*csv|.*md|.*svg"
+        exclude: ".*json$|.*txt$|.*csv|.*md|.*svg|pos_direct_print/public/js/lib/.*"
       - id: check-merge-conflict
       - id: check-ast
       - id: check-json
@@ -42,7 +42,8 @@ repos:
                 .*node_modules.*|
                 .*boilerplate.*|
                 pos_direct_print/templates/includes/.*|
-                pos_direct_print/public/js/lib/.*
+                pos_direct_print/public/js/lib/.*|
+                pos_direct_print/public/js/pos_direct_print/receipt/__tests__/hash_vectors\.test\.mjs
             )$
 
 
@@ -60,7 +61,8 @@ repos:
                 .*node_modules.*|
                 .*boilerplate.*|
                 pos_direct_print/templates/includes/.*|
-                pos_direct_print/public/js/lib/.*
+                pos_direct_print/public/js/lib/.*|
+                pos_direct_print/public/js/pos_direct_print/receipt/__tests__/hash_vectors\.test\.mjs
             )$
 
 ci:
