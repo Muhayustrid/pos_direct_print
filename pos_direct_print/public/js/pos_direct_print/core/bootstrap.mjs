@@ -60,7 +60,23 @@ export class SubsystemBootstrap {
       coordinator,
       registry,
       resolveDriver:
-        context.resolve_driver || ((record) => record.manifest.factory()),
+        context.resolve_driver ||
+        ((record, request) =>
+          request?.driver_key === "imin_v1"
+            ? new IminV1Driver({
+                connection_type:
+                  request.options?.transport ||
+                  context.terminal_transport ||
+                  "SPI",
+                paper_profile: resolvePaperProfile(
+                  request.options?.paper_profile ||
+                    context.paper_profile ||
+                    "reference_58mm"
+                ),
+                address: context.sdk_address,
+                timeout_ms: context.sdk_timeout_ms,
+              })
+            : record.manifest.factory()),
       // Default canonical receipt construction; injectable for tests.
       buildReceipt:
         context.build_receipt ||

@@ -143,13 +143,18 @@ export class POSIntegrationAdapter {
       source: trigger_source,
       job_type: "ORIGINAL",
       requested_by: doc.owner || null,
-      driver_key: null,
+      driver_key: summary?.pos_direct_print_driver_key || null,
       parent_job_id: null,
       reprint_reason: null,
       options: {
         invocation_args: Array.isArray(invocation_args)
           ? invocation_args.length
           : 0,
+        transport: summary?.pos_direct_print_transport || null,
+        paper_profile:
+          summary?.pos_direct_print_paper_width_mm === "58"
+            ? "reference_58mm"
+            : null,
       },
     };
   }

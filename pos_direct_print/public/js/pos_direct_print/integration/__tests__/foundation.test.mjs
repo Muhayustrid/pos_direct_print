@@ -706,6 +706,12 @@ test("resolved context preserves terminal transport, driver_key, and paper_width
     ctx.pos_direct_print_idempotency_key.startsWith("pdpr1:"),
     "key is still derived per invoice"
   );
+
+  Object.assign(summary, ctx);
+  const request = adapter.buildPrintRequest(summary, [], "POS_AUTO");
+  assert.equal(request.driver_key, "imin_v1");
+  assert.equal(request.options.transport, "USB");
+  assert.equal(request.options.paper_profile, "reference_58mm");
 });
 
 test("resolver failure surfaces canonical error without touching original print", async () => {

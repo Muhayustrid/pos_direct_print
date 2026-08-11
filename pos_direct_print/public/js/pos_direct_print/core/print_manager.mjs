@@ -240,8 +240,7 @@ export class PrintManager {
       });
     }
     const record = this.registry.getDriver(driver_key);
-    const driver = this.resolveDriver(record);
-    return driver;
+    return this.resolveDriver(record, request);
   }
 
   /**

@@ -5,6 +5,7 @@ import vm from "node:vm";
 
 import { bootSubsystem, SubsystemBootstrap } from "../../core/bootstrap.mjs";
 import { CapabilityRegistry } from "../../core/capability_registry.mjs";
+import { IMIN_V1_DRIVER_KEY } from "../../drivers/imin_v1_driver.mjs";
 
 const SDK_URL = "/assets/pos_direct_print/js/lib/imin/1.4.0/imin-printer.js";
 const LOADER_URL =
@@ -169,6 +170,23 @@ test("bootSubsystem returns the same result object on repeated calls", () => {
 
   assert.equal(first.initialized, true);
   assert.equal(second, first);
+});
+
+test("bootstrap builds imin_v1 with per-request terminal transport", () => {
+  const bootstrap = new SubsystemBootstrap();
+  bootstrap.initialize({
+    runtime: { IminPrinter: function IminPrinter() {} },
+    settings: { receipt_schema_version: 1 },
+  });
+
+  const record = bootstrap.state.registry.getDriver(IMIN_V1_DRIVER_KEY);
+  const driver = bootstrap.state.manager.resolveDriver(record, {
+    driver_key: IMIN_V1_DRIVER_KEY,
+    options: { transport: "USB", paper_profile: "reference_58mm" },
+  });
+
+  assert.equal(driver.connection_type, "USB");
+  assert.equal(driver.paper_profile.width_mm, 58);
 });
 
 test("bootstrap succeeds with a warning when the SDK is absent", () => {
