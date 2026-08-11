@@ -127,7 +127,9 @@ test("status coerces numeric strings", async () => {
 
 test("status timeout returns a canonical controlled failure", async () => {
   const { runtime } = makeRuntime({ status: new Promise(() => {}) });
-  const result = await new IminSdkAdapter({ runtime, timeout_ms: 5 }).getStatus("SPI");
+  const result = await new IminSdkAdapter({ runtime, timeout_ms: 5 }).getStatus(
+    "SPI"
+  );
 
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "PDP_PRINT_TIMEOUT");
@@ -153,4 +155,80 @@ test("dispose drops the SDK reference without calling unqualified close", () => 
   assert.deepEqual(adapter.dispose(), { disposed: true });
   adapter.initialize("SPI");
   assert.equal(instances.length, 2);
+});
+
+test("detect rejects missing WebSocket support without SDK construction", async () => {
+  let constructed = false;
+  class FakeIminPrinter {
+    constructor() {
+      constructed = true;
+    }
+  }
+  const adapter = new IminSdkAdapter({
+    runtime: { IminPrinter: FakeIminPrinter },
+  });
+
+  const result = await adapter.detect();
+
+  assert.equal(result.available, false);
+  assert.equal(result.reason, "WEBSOCKET_UNAVAILABLE");
+  assert.equal(result.error.code, "PDP_BRIDGE_UNAVAILABLE");
+  assert.equal(constructed, false);
+});
+
+test("detect rejects a missing SDK asset", async () => {
+  const adapter = new IminSdkAdapter({ runtime: { WebSocket: class {} } });
+  const result = await adapter.detect();
+
+  assert.equal(result.available, false);
+  assert.equal(result.reason, "SDK_ASSET_UNAVAILABLE");
+  assert.equal(result.error.code, "PDP_BRIDGE_UNAVAILABLE");
+});
+
+test("detect contains constructor failures", async () => {
+  class BrokenSdk {
+    constructor() {
+      throw new Error("raw constructor failure");
+    }
+  }
+  const adapter = new IminSdkAdapter({
+    runtime: { WebSocket: class {}, IminPrinter: BrokenSdk },
+  });
+
+  const result = await adapter.detect();
+
+  assert.equal(result.available, false);
+  assert.equal(result.reason, "SDK_CONSTRUCTION_FAILED");
+  assert.equal(
+    JSON.stringify(result).includes("raw constructor failure"),
+    false
+  );
+});
+
+test("detect reports successful connection", async () => {
+  const { runtime } = makeRuntime();
+  const result = await new IminSdkAdapter({ runtime }).detect();
+
+  assert.equal(result.available, true);
+  assert.equal(result.reason, null);
+  assert.equal(result.error, null);
+  assert.deepEqual(result.metadata, { address: "127.0.0.1" });
+});
+
+test("detect reports connect false as unavailable", async () => {
+  const { runtime } = makeRuntime({ connect: Promise.resolve(false) });
+  const result = await new IminSdkAdapter({ runtime }).detect();
+
+  assert.equal(result.available, false);
+  assert.equal(result.reason, "CONNECTION_FAILED");
+  assert.equal(result.error.code, "PDP_BRIDGE_UNAVAILABLE");
+});
+
+test("detect time-boxes a pending connection", async () => {
+  const { runtime } = makeRuntime({ connect: new Promise(() => {}) });
+  const result = await new IminSdkAdapter({ runtime, timeout_ms: 5 }).detect();
+
+  assert.equal(result.available, false);
+  assert.equal(result.reason, "CONNECTION_TIMEOUT");
+  assert.equal(result.error.code, "PDP_BRIDGE_UNAVAILABLE");
 });

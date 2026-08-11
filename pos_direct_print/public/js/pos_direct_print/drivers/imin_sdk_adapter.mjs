@@ -7,14 +7,54 @@ export class IminSdkAdapter {
   #timeout_ms;
   #instance = null;
 
-  constructor({ runtime = globalThis, address = "127.0.0.1", timeout_ms = 5000 } = {}) {
+  constructor({
+    runtime = globalThis,
+    address = "127.0.0.1",
+    timeout_ms = 5000,
+  } = {}) {
     this.#runtime = runtime;
     this.#address = address;
     this.#timeout_ms = timeout_ms;
   }
 
+  async detect() {
+    if (!this.#runtime.WebSocket && !this.#runtime.MozWebSocket) {
+      return bridgeUnavailable("WEBSOCKET_UNAVAILABLE");
+    }
+    if (typeof this.#runtime.IminPrinter !== "function") {
+      return bridgeUnavailable("SDK_ASSET_UNAVAILABLE");
+    }
+
+    try {
+      const instance = this.#requireInstance();
+      const connected = await withTimeout(instance.connect(), this.#timeout_ms);
+      if (!connected) {
+        return bridgeUnavailable("CONNECTION_FAILED");
+      }
+      return {
+        available: true,
+        reason: null,
+        error: null,
+        metadata: { address: this.#address },
+      };
+    } catch (error) {
+      const reason =
+        error?.code === "PDP_PRINT_TIMEOUT"
+          ? "CONNECTION_TIMEOUT"
+          : this.#instance
+          ? "CONNECTION_FAILED"
+          : "SDK_CONSTRUCTION_FAILED";
+      return bridgeUnavailable(reason, error);
+    }
+  }
+
   initialize(connection_type) {
-    return this.#dispatch("initPrinter", [connection_type], "PREFLIGHT", "PDP_PRINTER_NOT_READY");
+    return this.#dispatch(
+      "initPrinter",
+      [connection_type],
+      "PREFLIGHT",
+      "PDP_PRINTER_NOT_READY"
+    );
   }
 
   async getStatus(connection_type) {
@@ -68,7 +108,12 @@ export class IminSdkAdapter {
     return { disposed: true };
   }
 
-  #dispatch(method, args, phase = "PREFLIGHT", code = "PDP_PRINT_COMMAND_FAILED") {
+  #dispatch(
+    method,
+    args,
+    phase = "PREFLIGHT",
+    code = "PDP_PRINT_COMMAND_FAILED"
+  ) {
     try {
       this.#requireInstance()[method](...args);
       return { accepted: true, error: null, metadata: {} };
@@ -89,6 +134,20 @@ export class IminSdkAdapter {
   }
 }
 
+function bridgeUnavailable(reason, raw_error = null) {
+  const tagged = makeError("PDP_BRIDGE_UNAVAILABLE", {
+    phase: "PREFLIGHT",
+    cause: raw_error,
+    metadata: { reason },
+  });
+  return {
+    available: false,
+    reason,
+    error: normalize(tagged, "PREFLIGHT", { content_started: false }),
+    metadata: {},
+  };
+}
+
 function dispatchFailure(raw_error, phase, code) {
   const tagged = makeError(code, { phase, cause: raw_error });
   return {
@@ -99,9 +158,10 @@ function dispatchFailure(raw_error, phase, code) {
 }
 
 function statusFailure(raw_error) {
-  const code = raw_error?.code === "PDP_PRINT_TIMEOUT"
-    ? "PDP_PRINT_TIMEOUT"
-    : "PDP_PRINT_STATUS_UNKNOWN";
+  const code =
+    raw_error?.code === "PDP_PRINT_TIMEOUT"
+      ? "PDP_PRINT_TIMEOUT"
+      : "PDP_PRINT_STATUS_UNKNOWN";
   const tagged = makeError(code, { phase: "PREFLIGHT", cause: raw_error });
   return {
     ok: false,
@@ -119,5 +179,7 @@ function withTimeout(promise, timeout_ms) {
       timeout_ms
     );
   });
-  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() =>
+    clearTimeout(timer)
+  );
 }
