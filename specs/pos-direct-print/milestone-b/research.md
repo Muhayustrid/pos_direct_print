@@ -594,7 +594,7 @@ Milestone D owns model capability matrices.
 
 Decision record, 2026-08-10: requirements are classified into four groups. A single undifferentiated blocker list is no longer used.
 
-Reference device policy: Milestone B needs one physical reference device to prove the happy path. The architecture must not depend permanently on one model. The reference device validates physical behavior, transport, bridge behavior, layout, timing, and status semantics. It is not a reason to hardcode the system around one model. Unknown hardware facts are marked `PENDING REFERENCE DEVICE INVENTORY`, never guessed.
+Reference device policy: Milestone B needs one physical reference device to prove the happy path. The architecture must not depend permanently on one model. The reference device validates physical behavior, transport, bridge behavior, layout, timing, and status semantics. It is not a reason to hardcode the system around one model. Unknown hardware facts remain pending with a specific qualification gate and are never guessed.
 
 ### 13.1 Category A — mandatory before any B implementation
 
@@ -613,34 +613,54 @@ No remaining Category A blocker exists.
 
 | Requirement | State |
 | --- | --- |
-| Exact reference device model | PENDING REFERENCE DEVICE INVENTORY |
-| Actual transport for runtime initialization | PENDING REFERENCE DEVICE INVENTORY |
-| Exact physical paper width for the final receipt profile | PENDING REFERENCE DEVICE INVENTORY |
-| Hardware-specific initialization evidence, including raw READY value | PENDING REFERENCE DEVICE INVENTORY |
+| Exact reference device model | CONFIRMED: iMin `L21D01`, device name `Domba Jantan` |
+| Actual transport for runtime initialization | CANDIDATE: SDK default `SPI`; app-origin confirmation still required |
+| Exact physical paper width for the final receipt profile | CONFIRMED: `58 mm` |
+| Hardware-specific initialization evidence, including raw READY value | CONFIRMED on public iMin demo: init dispatch has no return, raw status `0`, and text prints physically |
 
 ### 13.3 Category C — mandatory before physical UAT
 
 | Requirement | State |
 | --- | --- |
-| Exact Android version as qualification evidence | PENDING REFERENCE DEVICE INVENTORY |
-| Browser name and version running ERPNext POS v16 | PENDING REFERENCE DEVICE INVENTORY |
-| `iMinprinterplugin` version or local service confirmation | PENDING REFERENCE DEVICE INVENTORY |
-| Actual `READY = 0` verification on the device | PENDING REFERENCE DEVICE INVENTORY |
-| Actual local WebSocket endpoint verification | PENDING REFERENCE DEVICE INVENTORY |
-| Final feed value | PENDING REFERENCE DEVICE INVENTORY |
-| Cold-start connection timing and any required post-connect delay | PENDING REFERENCE DEVICE INVENTORY |
-| Actual physical wrapping and layout verification | PENDING REFERENCE DEVICE INVENTORY |
+| Exact Android version as qualification evidence | CONFIRMED: Android 11 |
+| Browser name and version running ERPNext POS v16 | CONFIRMED: Chrome `108.0.5359.61` |
+| `iMinprinterplugin` version or local service confirmation | CONFIRMED: `1.2.15_2408141815` |
+| Actual `READY = 0` verification on the device | CONFIRMED on public iMin demo |
+| Actual local WebSocket endpoint verification | CONFIRMED indirectly by successful status and physical text print on the public iMin demo; app-origin check remains |
+| Final feed value | PENDING PHYSICAL RECEIPT UAT |
+| Cold-start connection timing and any required post-connect delay | PENDING APP-ORIGIN QUALIFICATION |
+| Actual physical wrapping and layout verification | PENDING PHYSICAL RECEIPT UAT |
 
 ### 13.4 Category D — diagnostic and qualification metadata
 
 | Requirement | State |
 | --- | --- |
-| ROM or build identifier | optional evidence |
-| WebView version, only if the POS page runs inside one | optional evidence |
+| ROM or build identifier | CONFIRMED: `1.2.8.3.12_260603` |
+| WebView version, only if the POS page runs inside one | NOT APPLICABLE: qualification uses Chrome |
 | Printer firmware version | optional evidence |
 | Extra timing metrics | optional evidence |
 
-### 13.5 SDK asset pin — B1-01 complete
+### 13.5 Reference device inventory — 2026-08-11
+
+Milestone B uses one V1 reference device:
+
+- device name: `Domba Jantan`;
+- model: iMin `L21D01`;
+- Android version: 11;
+- ROM/build: `1.2.8.3.12_260603`;
+- browser: Chrome `108.0.5359.61`;
+- paper width: `58 mm`;
+- `iMinprinterplugin`: `1.2.15_2408141815`;
+- printer: built-in thermal printer;
+- observed public-demo behavior: `initPrinter` dispatches without a response, `getPrinterStatus` returns raw `0`, and text prints physically;
+- runtime target: `imin_v1`;
+- transport candidate: SDK default `SPI`, pending app-origin confirmation.
+
+A second available device, `Swift 2` model `L23M01`, runs Android 13 build `1.1.0.5.32_240926`. It also prints through the public demo after plugin installation. Milestone B does not use it because Android 13 runtime qualification belongs to Milestone D.
+
+The remaining hardware gates are an app-origin bridge check, the final feed value, cold-start timing, and physical receipt layout.
+
+### 13.6 SDK asset pin — B1-01 complete
 
 - source: `docs/iMinJSPrinterSDK/v1/js-demo/html-demo/imin-printer.js`;
 - app-owned asset: `pos_direct_print/public/js/lib/imin/1.4.0/imin-printer.js`;
@@ -657,7 +677,7 @@ No remaining Category A blocker exists.
 
 No file under `docs/` is copied or modified by this decision.
 
-### 13.6 V2 inventory reconnaissance (read-only)
+### 13.7 V2 inventory reconnaissance (read-only)
 
 Official iMin documentation distinguishes a V2 runtime for Android 13 and above that does not require `iMinprinterplugin`. However, the current local `docs/iMinJSPrinterSDK/v2/` tree does **not** contain distinct V2 JavaScript bytes:
 
@@ -673,7 +693,7 @@ Official/source conflict record:
 - current local `v2/` JavaScript: same V1.4.0 local-WebSocket implementation as `v1/`;
 - resolution: do not assume the local `v2/` folder contains V2; do not resolve API shape by guesswork.
 
-### 13.7 Driver selection principle
+### 13.8 Driver selection principle
 
 Milestone B uses configured `POS Print Terminal.driver_key = imin_v1` for its V1-qualified reference terminal. No production rule may select SDK generation solely from Android version. Android version, plugin/service presence, transport, capabilities, and qualification status are evidence attached to a terminal; future reconciliation/detection policy belongs to Milestone D.
 
@@ -777,7 +797,7 @@ All design decisions are resolved:
 
 - B-COMP: Option A approved. See `contracts/print-completion.md`.
 - B-AC-01: approved as a minimal guarded refinement. See section 15.
-- Milestone B runtime: V1 plus `iMinprinterplugin` on one V1-qualified reference device; fleet/runtime generation remains heterogeneous. See sections 4.5 and 13.7.
+- Milestone B runtime: V1 plus `iMinprinterplugin` on one V1-qualified reference device; fleet/runtime generation remains heterogeneous. See sections 4.5 and 13.8.
 - Paper profile: parameterized normalized profile, no model hardcoding. See section 8.
 
 Reference-device hardware facts remain pending and are classified in section 13.
@@ -788,7 +808,7 @@ Milestone B status is **READY FOR B1 / PARTIALLY READY**. Generic B1 work can st
 
 | Batch | Readiness |
 | --- | --- |
-| B1 | READY NOW: B1-01, B1-02, B1-03. PENDING REFERENCE DEVICE INVENTORY: B1-04, B1-05. |
+| B1 | COMPLETE: B1-01, B1-02, B1-03. READY FOR APP-ORIGIN QUALIFICATION: B1-04, B1-05 on `L21D01`. |
 | B2 | READY NOW: B2-01, B2-03 mapping structure, B2-04 dispatch sequence, B2-06. READY AFTER B1: B2-02. Hardware values pending: B2-05 feed value. |
 | B3 | READY NOW: B3-01 parameterized profile, B3-02, B3-03. Final width pending before B6. |
 | B4 | READY NOW: B4-01, B4-02, B4-03. BLOCKED UNTIL PHYSICAL UAT: B4-04. |
