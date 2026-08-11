@@ -125,6 +125,28 @@ test("status coerces numeric strings", async () => {
   assert.equal(result.error, null);
 });
 
+test("status treats null as unknown status", async () => {
+  const { runtime } = makeRuntime({
+    status: Promise.resolve({ value: null, text: "normal" }),
+  });
+  const result = await new IminSdkAdapter({ runtime }).getStatus("SPI");
+
+  assert.equal(result.ok, false);
+  assert.equal(result.value, null);
+  assert.equal(result.error.code, "PDP_PRINT_STATUS_UNKNOWN");
+});
+
+test("status treats empty string as unknown status", async () => {
+  const { runtime } = makeRuntime({
+    status: Promise.resolve({ value: "", text: "normal" }),
+  });
+  const result = await new IminSdkAdapter({ runtime }).getStatus("SPI");
+
+  assert.equal(result.ok, false);
+  assert.equal(result.value, null);
+  assert.equal(result.error.code, "PDP_PRINT_STATUS_UNKNOWN");
+});
+
 test("status timeout returns a canonical controlled failure", async () => {
   const { runtime } = makeRuntime({ status: new Promise(() => {}) });
   const result = await new IminSdkAdapter({ runtime, timeout_ms: 5 }).getStatus(

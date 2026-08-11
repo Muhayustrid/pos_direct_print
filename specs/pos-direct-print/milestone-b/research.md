@@ -652,6 +652,7 @@ No remaining Category A blocker exists.
 - dispatch interface: initialization, style, text, and feed calls are void/fire-and-forget;
 - connect interface: `connect()` returns a Promise and has an internal five-second timeout;
 - production loading: deferred to B4-03. B1 does not add hooks;
+- UMD loading hazard: the UMD tail runs `window.Vue.use(IminPrinter)` when a global `Vue` exists, so B4-03 must load the asset without exposing a global `Vue` (or neutralize `install`);
 - local `v2/` evidence: byte-identical V1.4.0, not an authoritative V2 implementation.
 
 No file under `docs/` is copied or modified by this decision.

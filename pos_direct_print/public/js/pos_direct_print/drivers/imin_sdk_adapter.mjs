@@ -64,7 +64,13 @@ export class IminSdkAdapter {
         instance.getPrinterStatus(connection_type),
         this.#timeout_ms
       );
-      const value = Number(status?.value);
+      const raw = status?.value;
+      const value =
+        typeof raw === "number"
+          ? raw
+          : typeof raw === "string" && /^-?\d+$/u.test(raw)
+          ? Number(raw)
+          : NaN;
       if (!Number.isFinite(value)) {
         throw makeError("PDP_PRINT_STATUS_UNKNOWN", { phase: "PREFLIGHT" });
       }
