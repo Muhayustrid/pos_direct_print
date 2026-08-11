@@ -115,6 +115,33 @@ def reserve_job(job_name, reservation_owner, expected_from_state="CREATED", rese
 	return frappe.get_doc("POS Print Job", job.name)
 
 
+def bind_receipt_snapshot(job_name, reservation_owner, receipt_snapshot, receipt_hash):
+	"""Atomically bind the first receipt snapshot to its reservation."""
+	affected = _guarded_update(
+		"UPDATE `tabPOS Print Job`"
+		" SET `receipt_snapshot` = %s, `receipt_hash` = %s, `receipt_schema_version` = 1"
+		" WHERE `name` = %s AND `status` = 'RESERVED'"
+		" AND `reservation_owner` = %s AND `reservation_owner` <> ''"
+		" AND (`receipt_snapshot` IS NULL OR `receipt_snapshot` = '')"
+		" AND (`receipt_hash` IS NULL OR `receipt_hash` = '')",
+		(receipt_snapshot, receipt_hash, job_name, reservation_owner),
+		job_name,
+		"RESERVED",
+	)
+	if affected:
+		return frappe.get_doc("POS Print Job", job_name)
+	stored = frappe.db.get_value(
+		"POS Print Job", job_name, ["status", "reservation_owner", "receipt_hash"], as_dict=True
+	)
+	if (
+		stored.status == "RESERVED"
+		and stored.reservation_owner == reservation_owner
+		and stored.receipt_hash == receipt_hash
+	):
+		return frappe.get_doc("POS Print Job", job_name)
+	_throw_conflict(job_name, "RESERVED", stored.status)
+
+
 def reserve_safe_retry(job_name, reservation_owner, max_retries, reserved_until=None):
 	"""Atomically increment the safe-retry counter and reserve a FAILED_SAFE Job."""
 	check_transition("FAILED_SAFE", "RESERVED")

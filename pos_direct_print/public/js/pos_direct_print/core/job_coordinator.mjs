@@ -10,6 +10,7 @@
 
 import { makeError } from "./errors.mjs";
 import { assertTransition } from "./print_job.mjs";
+import { canonicalize, hashReceipt } from "../receipt/receipt_builder.mjs";
 
 export class JobCoordinator {
   /**
@@ -57,6 +58,15 @@ export class JobCoordinator {
 
   async beginAttempt({ job_id, reservation_token, terminal_id = null }) {
     return this.api.startAttempt({ job_id, reservation_token, terminal_id });
+  }
+
+  async bindReceiptSnapshot({ job_id, reservation_token, receipt }) {
+    return this.api.bindReceiptSnapshot({
+      job_id,
+      reservation_token,
+      receipt_snapshot: canonicalize(receipt),
+      receipt_hash: hashReceipt(receipt),
+    });
   }
 
   /**

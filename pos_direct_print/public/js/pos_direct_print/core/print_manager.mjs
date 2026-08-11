@@ -86,6 +86,12 @@ export class PrintManager {
       const receipt =
         context.receipt || (await this._buildReceipt(request, context));
 
+      await this.coordinator.bindReceiptSnapshot({
+        job_id: reservation.job_id,
+        reservation_token: reservation.reservation_token,
+        receipt,
+      });
+
       const driver = await this._selectDriver(request);
 
       const started = await this.coordinator.beginAttempt({
@@ -151,6 +157,15 @@ export class PrintManager {
             },
             { invoice_snapshot: snapshot }
           );
+
+      // DECIDED C-5: retry skips the bind when the bound snapshot is reused.
+      if (!this.fetchReceipt) {
+        await this.coordinator.bindReceiptSnapshot({
+          job_id,
+          reservation_token: state.reservation_token,
+          receipt,
+        });
+      }
 
       const driver = await this._selectDriver({
         driver_key: snapshot.driver_key,

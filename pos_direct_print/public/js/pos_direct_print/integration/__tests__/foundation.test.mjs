@@ -85,6 +85,16 @@ class InMemoryApi {
     return { job: { status: job.status }, attempt };
   }
 
+  async bindReceiptSnapshot({ job_id, receipt_snapshot, receipt_hash }) {
+    const job = this.jobs.get(job_id);
+    if (job.status !== "RESERVED") {
+      throw new Error(`PDP_JOB_CONFLICT: expected RESERVED, is ${job.status}`);
+    }
+    job.receipt_snapshot = receipt_snapshot;
+    job.receipt_hash = receipt_hash;
+    return { status: job.status };
+  }
+
   async transitionJob({ job_id, expected_from_state, target_state }) {
     const job = this.jobs.get(job_id);
     if (!VALID_TRANSITIONS.has(`${expected_from_state}->${target_state}`)) {
@@ -149,7 +159,13 @@ function makeFoundation(settings = {}) {
     resolveDriver: (record) => record.manifest.factory(),
     buildReceipt: (snapshot) => ({
       schema_version: 1,
+      reference_doctype: "POS Invoice",
       reference_name: snapshot?.name,
+      locale: "id-ID",
+      currency: "IDR",
+      paper_profile: "58mm",
+      blocks: [],
+      metadata: {},
     }),
     default_driver_key: "fake",
   });

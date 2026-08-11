@@ -87,6 +87,32 @@ class InMemoryApi {
     return { job: { status: job.status }, attempt };
   }
 
+  async bindReceiptSnapshot({
+    job_id,
+    reservation_token,
+    receipt_snapshot,
+    receipt_hash,
+  }) {
+    this.events.push("bind");
+    this.bind_calls = this.bind_calls || [];
+    this.bind_calls.push({
+      job_id,
+      reservation_token,
+      receipt_snapshot,
+      receipt_hash,
+    });
+    const job = this.jobs.get(job_id);
+    if (job.status !== "RESERVED") {
+      throw new Error(`PDP_JOB_CONFLICT: expected RESERVED, is ${job.status}`);
+    }
+    if (this.fail_bind) {
+      throw new Error("PDP_JOB_CONFLICT: bind failed");
+    }
+    job.receipt_snapshot = receipt_snapshot;
+    job.receipt_hash = receipt_hash;
+    return { status: job.status };
+  }
+
   async transitionJob({ job_id, expected_from_state, target_state }) {
     this.transitions.push({ job_id, expected_from_state, target_state });
     this.events.push(`transition:${target_state}`);
@@ -170,7 +196,12 @@ class RecordingDriver extends FakeDriver {
     const result = super.getStatus();
     if (this.script.status_state) {
       const state = this.script.status_state;
-      return { ...result, state, ready: state === "READY", blocking: state !== "READY" };
+      return {
+        ...result,
+        state,
+        ready: state === "READY",
+        blocking: state !== "READY",
+      };
     }
     return result;
   }
@@ -211,11 +242,16 @@ function makeFoundation(settings = {}) {
   const coordinator = new JobCoordinator(api);
   const registry = new CapabilityRegistry({ allow_reregistration: true });
   const trace = settings.trace || [];
-  const factory = () => new RecordingDriver(trace, settings.driver_script || {});
+  const factory = () =>
+    new RecordingDriver(trace, settings.driver_script || {});
   registry.registerDriver({
     driver_key: "fake",
     factory,
-    capabilities: { supports_text: true, supports_feed: true, paper_width_mm: 58 },
+    capabilities: {
+      supports_text: true,
+      supports_feed: true,
+      paper_width_mm: 58,
+    },
   });
   const manager = new PrintManager({
     coordinator,
@@ -223,7 +259,13 @@ function makeFoundation(settings = {}) {
     resolveDriver: (record) => record.manifest.factory(),
     buildReceipt: (snapshot) => ({
       schema_version: 1,
+      reference_doctype: "POS Invoice",
       reference_name: snapshot?.name,
+      locale: "id-ID",
+      currency: "IDR",
+      paper_profile: "58mm",
+      blocks: [],
+      metadata: {},
     }),
     default_driver_key: "fake",
   });
@@ -254,7 +296,9 @@ function request(manager, overrides = {}) {
 }
 
 function transitionPairs(api) {
-  return api.transitions.map((t) => `${t.expected_from_state}->${t.target_state}`);
+  return api.transitions.map(
+    (t) => `${t.expected_from_state}->${t.target_state}`
+  );
 }
 
 test("happy path: lifecycle call order and state walk are exact", async () => {
@@ -265,12 +309,13 @@ test("happy path: lifecycle call order and state walk are exact", async () => {
   assert.equal(outcome.status, "SUCCEEDED");
   // Driver trace proves preflight before dispatch; the coordinator event
   // trace proves the exact lifecycle order (task brief step 1 case 1):
-  // reserve -> beginAttempt -> detect -> initialize -> getStatus ->
+  // reserve -> bind -> beginAttempt -> detect -> initialize -> getStatus ->
   // transition(PREFLIGHT->PRINTING) -> print -> completeAttempt ->
   // transition(PRINTING->VERIFYING) -> transition(VERIFYING->SUCCEEDED).
   assert.deepEqual(trace, ["detect", "initialize", "getStatus", "print"]);
   assert.deepEqual(api.events, [
     "reserve",
+    "bind",
     "beginAttempt",
     "transition:PRINTING",
     "completeAttempt",
@@ -355,12 +400,10 @@ test("retryJob re-runs the cycle and re-reserves FAILED_SAFE->RESERVED", async (
   assert.equal(retried.success, true);
   assert.equal(retried.job_id, failed.job_id, "same Job, never a new one");
   const new_transitions = api.transitions.slice(transitions_before);
-  assert.deepEqual(new_transitions.map((t) => t.expected_from_state), [
-    "FAILED_SAFE",
-    "PREFLIGHT",
-    "PRINTING",
-    "VERIFYING",
-  ]);
+  assert.deepEqual(
+    new_transitions.map((t) => t.expected_from_state),
+    ["FAILED_SAFE", "PREFLIGHT", "PRINTING", "VERIFYING"]
+  );
   assert.deepEqual(trace, ["detect", "initialize", "getStatus", "print"]);
   const attempts = [...api.attempts.values()].filter(
     (a) => a.job === failed.job_id
@@ -369,6 +412,99 @@ test("retryJob re-runs the cycle and re-reserves FAILED_SAFE->RESERVED", async (
     attempts.map((a) => a.attempt_no).sort(),
     [1, 2],
     "second Attempt under the same Job"
+  );
+});
+
+test("bind is called between reserve and beginAttempt with exact args", async () => {
+  const { api, manager } = makeFoundation();
+  const outcome = await request(manager);
+
+  assert.equal(outcome.success, true);
+  assert.equal(api.bind_calls.length, 1, "bind called exactly once");
+  const call = api.bind_calls[0];
+  assert.equal(call.job_id, outcome.job_id);
+  assert.equal(call.reservation_token, "client-1");
+  assert.ok(call.receipt_hash, "client computed the hash");
+  const events = api.events;
+  const reserve_at = events.indexOf("reserve");
+  const bind_at = events.indexOf("bind");
+  const begin_at = events.indexOf("beginAttempt");
+  assert.ok(reserve_at < bind_at, "bind after reserve");
+  assert.ok(bind_at < begin_at, "bind before beginAttempt");
+});
+
+test("bind failure settles FAILED_SAFE and creates no attempt", async () => {
+  const { api, manager } = makeFoundation();
+  api.fail_bind = true;
+  const outcome = await request(manager);
+
+  assert.equal(outcome.status, "FAILED_SAFE");
+  assert.equal(outcome.success, false);
+  assert.ok(outcome.error.code.includes("PDP_JOB_CONFLICT"));
+  assert.ok(!api.events.includes("beginAttempt"), "no attempt created");
+  assert.equal([...api.attempts.values()].length, 0);
+});
+
+test("retryJob with fetchReceipt reuses the bound snapshot and skips bind", async () => {
+  const settings = {
+    driver_script: { print_behavior: "fail_before_content" },
+  };
+  const { api, manager, trace } = makeFoundation(settings);
+  const failed = await request(manager);
+  assert.equal(failed.status, "FAILED_SAFE");
+  assert.equal(api.bind_calls.length, 1, "initial print bound once");
+
+  const first_attempt = await api.lastAttemptFor(failed.job_id);
+  first_attempt.retry_class = "AUTO_SAFE";
+  settings.driver_script.print_behavior = "succeed";
+  trace.length = 0;
+  const bound_before = api.bind_calls.length;
+  const fetch_receipt = async () => ({
+    schema_version: 1,
+    reference_name: "POS-INV-LC-1",
+  });
+  manager.fetchReceipt = fetch_receipt;
+
+  const retried = await manager.retryJob(
+    failed.job_id,
+    "op@example.test",
+    "operator retry"
+  );
+
+  assert.equal(retried.status, "SUCCEEDED");
+  assert.equal(
+    api.bind_calls.length,
+    bound_before,
+    "no bind on fetchReceipt retry"
+  );
+});
+
+test("retryJob without fetchReceipt rebuilds and binds the new snapshot", async () => {
+  const settings = {
+    driver_script: { print_behavior: "fail_before_content" },
+  };
+  const { api, manager, trace } = makeFoundation(settings);
+  const failed = await request(manager);
+  assert.equal(failed.status, "FAILED_SAFE");
+  assert.equal(api.bind_calls.length, 1);
+
+  const first_attempt = await api.lastAttemptFor(failed.job_id);
+  first_attempt.retry_class = "AUTO_SAFE";
+  settings.driver_script.print_behavior = "succeed";
+  trace.length = 0;
+  const bound_before = api.bind_calls.length;
+
+  const retried = await manager.retryJob(
+    failed.job_id,
+    "op@example.test",
+    "operator retry"
+  );
+
+  assert.equal(retried.status, "SUCCEEDED");
+  assert.equal(
+    api.bind_calls.length,
+    bound_before + 1,
+    "rebuild path binds again"
   );
 });
 

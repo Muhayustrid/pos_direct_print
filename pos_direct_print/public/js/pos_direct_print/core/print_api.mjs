@@ -15,6 +15,7 @@ export const OPERATIONS = Object.freeze({
   RESOLVE_TERMINAL_FOR_PROFILE: `${MODULE}.resolve_terminal_for_profile`,
   RESERVE_PRINT_JOB: `${MODULE}.reserve_print_job`,
   START_ATTEMPT: `${MODULE}.start_attempt`,
+  BIND_RECEIPT_SNAPSHOT: `${MODULE}.bind_receipt_snapshot`,
   TRANSITION_JOB: `${MODULE}.transition_job`,
   COMPLETE_ATTEMPT: `${MODULE}.complete_attempt`,
   RELEASE_RESERVATION: `${MODULE}.release_reservation`,
@@ -28,6 +29,7 @@ const OPERATION_PHASES = Object.freeze({
   [OPERATIONS.RESOLVE_TERMINAL_FOR_PROFILE]: "RESERVATION",
   [OPERATIONS.RESERVE_PRINT_JOB]: "RESERVATION",
   [OPERATIONS.START_ATTEMPT]: "PREFLIGHT",
+  [OPERATIONS.BIND_RECEIPT_SNAPSHOT]: "RECEIPT",
   [OPERATIONS.TRANSITION_JOB]: "PRINT",
   [OPERATIONS.COMPLETE_ATTEMPT]: "VERIFY",
   [OPERATIONS.RELEASE_RESERVATION]: "RESERVATION",
@@ -68,6 +70,20 @@ export class PrintApi {
       job_id,
       reservation_token,
       terminal_id,
+    });
+  }
+
+  bindReceiptSnapshot({
+    job_id,
+    reservation_token,
+    receipt_snapshot,
+    receipt_hash,
+  }) {
+    return this._invoke(OPERATIONS.BIND_RECEIPT_SNAPSHOT, {
+      job_id,
+      reservation_token,
+      receipt_snapshot,
+      receipt_hash,
     });
   }
 

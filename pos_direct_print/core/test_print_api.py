@@ -1,9 +1,11 @@
+import json
 import uuid
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
 from pos_direct_print.core.print_api import (
+	bind_receipt_snapshot,
 	complete_attempt,
 	get_settings,
 	release_reservation,
@@ -14,10 +16,24 @@ from pos_direct_print.core.print_api import (
 	start_attempt,
 	transition_job,
 )
+from pos_direct_print.core.receipt_hash import hash_receipt
 
 COMPANY = "PT. JUARA ROTI INDONESIA"
 OUTLET_A = "yusuf"
 OUTLET_B = "POS Training"
+
+
+def _receipt():
+	return {
+		"schema_version": 1,
+		"reference_doctype": "POS Invoice",
+		"reference_name": "POS-INV-BIND-1",
+		"locale": "id-ID",
+		"currency": "IDR",
+		"paper_profile": "58mm",
+		"blocks": [{"type": "TEXT", "text": "TOTAL 1000"}],
+		"metadata": {},
+	}
 
 
 class TestPrintApiTransport(IntegrationTestCase):
@@ -209,6 +225,108 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(other_operator):
 			with self.assertRaises(frappe.PermissionError):
 				retrieve_job(reservation["job_id"])
+
+
+class TestBindReceiptSnapshot(IntegrationTestCase):
+	def setUp(self):
+		self.operator = _user_with_role("bind.op@example.test", "POS Print Operator")
+		_pos_profile_grant_user(OUTLET_A, self.operator)
+		self.terminal = _terminal(OUTLET_A)
+		self.snapshot = _receipt()
+
+	def _reserve(self):
+		with _user(self.operator):
+			return reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"bind-idem-{uuid.uuid4().hex[:8]}",
+			)
+
+	def _bind_kwargs(self, snapshot=None):
+		snapshot = snapshot or self.snapshot
+		return {
+			"job_id": self.reservation["job_id"],
+			"reservation_token": self.reservation["reservation_token"],
+			"receipt_snapshot": json.dumps(snapshot),
+			"receipt_hash": hash_receipt(snapshot),
+		}
+
+	def test_bind_persists_snapshot_hash_and_schema_version(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			projection = bind_receipt_snapshot(**self._bind_kwargs())
+		self.assertEqual(projection["status"], "RESERVED")
+		stored = frappe.get_doc("POS Print Job", self.reservation["job_id"])
+		self.assertEqual(stored.receipt_snapshot, json.dumps(self.snapshot))
+		self.assertEqual(stored.receipt_hash, hash_receipt(self.snapshot))
+		self.assertEqual(stored.receipt_schema_version, 1)
+
+	def test_second_identical_bind_is_idempotent(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			bind_receipt_snapshot(**self._bind_kwargs())
+			projection = bind_receipt_snapshot(**self._bind_kwargs())
+		self.assertEqual(projection["status"], "RESERVED")
+
+	def test_different_hash_while_bound_raises_conflict(self):
+		self.reservation = self._reserve()
+		other = {**self.snapshot, "reference_name": "POS-INV-BIND-2"}
+		with _user(self.operator):
+			bind_receipt_snapshot(**self._bind_kwargs())
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**self._bind_kwargs(other))
+		self.assertIn("PDP_JOB_CONFLICT", str(ctx.exception))
+
+	def test_wrong_or_empty_token_rejected(self):
+		self.reservation = self._reserve()
+		kwargs = self._bind_kwargs()
+		with _user(self.operator):
+			for token in ("wrong", ""):
+				with self.subTest(token=token):
+					with self.assertRaises(frappe.ValidationError):
+						bind_receipt_snapshot(**{**kwargs, "reservation_token": token})
+
+	def test_bind_after_start_attempt_rejected(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			start_attempt(
+				job_id=self.reservation["job_id"],
+				reservation_token=self.reservation["reservation_token"],
+			)
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**self._bind_kwargs())
+		self.assertIn("PDP_JOB_CONFLICT", str(ctx.exception))
+
+	def test_hash_mismatch_with_client_value_raises_validation_error(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**{**self._bind_kwargs(), "receipt_hash": "pdpr1:0000000000000000"})
+		self.assertIn("PDP_RECEIPT_INVALID", str(ctx.exception))
+
+	def test_malformed_json_raises_validation_error(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**{**self._bind_kwargs(), "receipt_snapshot": "{not json"})
+		self.assertIn("PDP_RECEIPT_INVALID", str(ctx.exception))
+
+	def test_projections_never_contain_snapshot_or_hash(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			bind_receipt_snapshot(**self._bind_kwargs())
+			retrieved = retrieve_job(self.reservation["job_id"])
+			transitioned = transition_job(
+				job_id=self.reservation["job_id"],
+				expected_from_state="RESERVED",
+				target_state="CANCELLED",
+				reservation_token=self.reservation["reservation_token"],
+			)
+		for projection in (retrieved, transitioned):
+			self.assertNotIn("receipt_snapshot", projection)
+			self.assertNotIn("receipt_hash", projection)
 
 
 class TestResolveTerminalForProfile(IntegrationTestCase):

@@ -4,6 +4,8 @@ core.state_machine. Every endpoint enforces authorization server-side and
 returns only sanitized projections (A-DOD-15), never raw documents.
 """
 
+import json
+
 import frappe
 from frappe import _
 from frappe.utils import now_datetime
@@ -15,6 +17,7 @@ from pos_direct_print.core.projections import (
 	runtime_settings_projection,
 	terminal_runtime_projection,
 )
+from pos_direct_print.core.receipt_hash import hash_receipt
 from pos_direct_print.core.security import user_scopes
 from pos_direct_print.core.state_machine import check_transition
 
@@ -167,6 +170,36 @@ def start_attempt(job_id, reservation_token, terminal_id=None):
 			"phase_reached": attempt.phase_reached,
 		},
 	}
+
+
+@frappe.whitelist()
+def bind_receipt_snapshot(job_id, reservation_token, receipt_snapshot, receipt_hash):
+	"""B-AC-01. Order: scope -> parse JSON -> schema v1 -> server-side hash
+	recompute + equality -> guarded atomic bind. Returns job_status_projection
+	only (snapshot/hash never leave through any projection — A.31.9 Level 1)."""
+	user = frappe.session.user
+	_scoped_job(job_id, user)
+	try:
+		document = json.loads(receipt_snapshot)
+	except (TypeError, ValueError):
+		frappe.throw(
+			_("PDP_RECEIPT_INVALID: receipt snapshot is not valid JSON."),
+			exc=frappe.ValidationError,
+		)
+	if not isinstance(document, dict) or document.get("schema_version") != 1:
+		frappe.throw(
+			_("PDP_RECEIPT_INVALID: receipt snapshot must be schema version 1."),
+			exc=frappe.ValidationError,
+		)
+	if hash_receipt(document) != receipt_hash:
+		frappe.throw(
+			_("PDP_RECEIPT_INVALID: receipt hash does not match the snapshot."),
+			exc=frappe.ValidationError,
+		)
+	bound = reservation_service.bind_receipt_snapshot(
+		job_id, reservation_token, receipt_snapshot, receipt_hash
+	)
+	return job_status_projection(bound)
 
 
 @frappe.whitelist()
