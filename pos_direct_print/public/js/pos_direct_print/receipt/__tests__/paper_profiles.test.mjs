@@ -31,8 +31,8 @@ test("paper profiles are frozen and expose the reference defaults", () => {
     key: "reference_58mm",
     width_mm: 58,
     logical_width: 32,
-    page_format: 1,
-    text_width_dots: 384,
+    page_format: null,
+    text_width_dots: null,
     text_size: 24,
     final_feed: 100,
   });

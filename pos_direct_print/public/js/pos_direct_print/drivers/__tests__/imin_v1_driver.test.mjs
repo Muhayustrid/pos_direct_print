@@ -192,8 +192,6 @@ test("print dispatches setup, style-before-text pairs, one newline, and final fe
   assert.deepEqual(commands[2], ["getPrinterStatus", "SPI"]);
 
   const expectedSetup = [
-    ["setPageFormat", 1],
-    ["setTextWidth", 384],
     ["setAlignment", 0],
     ["setTextSize", 24],
     ["setTextStyle", 0],
@@ -384,6 +382,47 @@ test("print waits for the queue to drain before sampling post-dispatch status", 
     "post-dispatch status sample must follow the settle wait"
   );
   assert.equal(result.metadata.post_status_checked, true);
+});
+
+test("profile-gated setup commands are skipped when the profile leaves them null", async () => {
+  const { adapter, instances } = makeAdapter();
+  const driver = makeDriver({ sdk_adapter: adapter, paper_profile: TEST_PROFILE });
+  await driver.initialize();
+  await driver.print(receipt([{ type: "TEXT", text: "x" }], TEST_PROFILE));
+
+  const methods = instances[0].calls.map((call) => call.method);
+  assert.equal(methods.includes("setPageFormat"), false);
+  assert.equal(methods.includes("setTextWidth"), false);
+  // Documented-semantics commands still go out.
+  assert.equal(methods.includes("setAlignment"), true);
+  assert.equal(methods.includes("setTextStyle"), true);
+});
+
+test("profile-gated setup commands are sent when the profile sets them", async () => {
+  const { adapter, instances } = makeAdapter();
+  const profile = makePaperProfile({
+    key: "test",
+    logical_width: 8,
+    final_feed: 2,
+    page_format: 1,
+    text_width_dots: 384,
+  });
+  const driver = makeDriver({ sdk_adapter: adapter, paper_profile: profile });
+  await driver.initialize();
+  await driver.print(receipt([{ type: "TEXT", text: "x" }], profile));
+
+  const commands = instances[0].calls.map(({ method, value }) => [
+    method,
+    value,
+  ]);
+  assert.ok(
+    commands.some(([m, v]) => m === "setPageFormat" && v === 1),
+    "setPageFormat sent with the profile value"
+  );
+  assert.ok(
+    commands.some(([m, v]) => m === "setTextWidth" && v === 384),
+    "setTextWidth sent with the profile value"
+  );
 });
 
 test("cut returns controlled unsupported result", () => {

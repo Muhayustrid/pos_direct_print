@@ -163,10 +163,24 @@ export class IminV1Driver extends BaseDriver {
         throw makeError("PDP_PRINTER_NOT_READY", { phase: "PREFLIGHT" });
       }
 
-      this._require(this.sdk_adapter.setPageFormat(profile.page_format));
-      this._require(this.sdk_adapter.setTextWidth(profile.text_width_dots));
+      // Setup commands are profile-gated: a null value means "do not send".
+      // The reference device prints correctly with its own head defaults, and
+      // every command sent before the text is a chance to put the printer into
+      // an unverified mode. setPageFormat in particular has no documented
+      // meaning for its style argument, and sending it produced accepted
+      // commands with no usable output on the L21D01. Alignment and text style
+      // always go out: their semantics are documented and the layout depends
+      // on them.
+      this._requireIfSet(profile.page_format, (value) =>
+        this.sdk_adapter.setPageFormat(value)
+      );
+      this._requireIfSet(profile.text_width_dots, (value) =>
+        this.sdk_adapter.setTextWidth(value)
+      );
       this._require(this.sdk_adapter.setAlignment(0)); // left default (B-RCP-06)
-      this._require(this.sdk_adapter.setTextSize(profile.text_size));
+      this._requireIfSet(profile.text_size, (value) =>
+        this.sdk_adapter.setTextSize(value)
+      );
       this._require(this.sdk_adapter.setTextStyle(0));
 
       for (const line of renderReceiptLines(receipt_document, profile)) {
@@ -236,6 +250,14 @@ export class IminV1Driver extends BaseDriver {
     if (!dispatch.accepted) {
       throw this._sanitizeError(dispatch.error);
     }
+  }
+
+  /** Send a profile-gated setup command only when the profile carries a value. */
+  _requireIfSet(value, send) {
+    if (value === null || value === undefined) {
+      return;
+    }
+    this._require(send(value));
   }
 
   _sendInitPrinter() {
