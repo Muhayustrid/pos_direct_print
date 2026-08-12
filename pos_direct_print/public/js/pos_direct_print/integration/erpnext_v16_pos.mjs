@@ -16,6 +16,17 @@ export const ALLOWED_SOURCE_DOCTYPES = Object.freeze([
   SALES_INVOICE_DOCTYPE,
 ]);
 
+/**
+ * Settled states where a physical copy may already exist, so another copy is
+ * legal only as a REPRINT. FAILED_SAFE is deliberately absent: nothing was
+ * printed, so the cashier may simply print again.
+ */
+const REPRINTABLE_OUTCOME_STATUSES = Object.freeze([
+  "SUCCEEDED",
+  "UNCERTAIN",
+  "FALLBACK_BROWSER",
+]);
+
 export class POSIntegrationAdapter {
   /**
    * @param {object} options
@@ -88,6 +99,7 @@ export class POSIntegrationAdapter {
             adapter._requestContext(this)
           )
         )
+        .then((outcome) => adapter._syncReprintSlot(this, outcome))
         .then((outcome) =>
           adapter._settleOutcome(outcome, original_method, this, args)
         );
@@ -117,6 +129,10 @@ export class POSIntegrationAdapter {
    * joins the settled Job instead of printing again. A second physical copy is
    * legal only as a REPRINT — a new Job, with an authorized requester and a
    * mandatory reason. This button is that path.
+   *
+   * The button is rendered hidden and takes over the Print Receipt slot once a
+   * print settles with content possibly on paper, so the button row keeps its
+   * original layout: exactly one of the two is ever visible.
    *
    * Renders only for POS Print Manager / System Manager: Operator has no
    * reprint authority (the server enforces this too — the hidden button is
@@ -215,8 +231,10 @@ export class POSIntegrationAdapter {
     }
 
     const label = _translate("Reprint");
+    // Hidden until a print settles with content possibly on paper: Reprint then
+    // takes over the Print Receipt slot, so the row keeps its original layout.
     const button = _jquery(
-      `<div class="summary-btn btn btn-default pdp-reprint-btn">${label}</div>`
+      `<div class="summary-btn btn btn-default pdp-reprint-btn" style="display: none;">${label}</div>`
     );
     if (!button) {
       return;
@@ -228,6 +246,30 @@ export class POSIntegrationAdapter {
       });
     });
     container.append(button);
+  }
+
+  /**
+   * One slot, two buttons. Print Receipt stays while a fresh copy is still
+   * legal; Reprint replaces it once content may already be on paper, because
+   * from that point a repeated ORIGINAL print is refused by idempotency and
+   * REPRINT is the only sanctioned second copy. A FAILED_SAFE outcome printed
+   * nothing, so Print Receipt stays and the cashier can simply print again.
+   */
+  _syncReprintSlot(summary, outcome) {
+    const container = summary?.$summary_btns;
+    if (!container || typeof container.find !== "function") {
+      return outcome;
+    }
+    const reprint_btn = container.find(".pdp-reprint-btn");
+    if (!reprint_btn.length) {
+      return outcome;
+    }
+    if (!_mayHavePrinted(outcome)) {
+      return outcome;
+    }
+    _setVisible(container.find(".print-btn"), false);
+    _setVisible(reprint_btn, true);
+    return outcome;
   }
 
   _promptReprintReason() {
@@ -535,6 +577,39 @@ function _translate(text) {
 function _jquery(html) {
   const $ = typeof window !== "undefined" ? window.$ || window.jQuery : null;
   return $ ? $(html) : null;
+}
+
+/**
+ * True when the outcome means paper may already carry this receipt, so only a
+ * REPRINT may produce another copy. A failed reservation (no status at all) and
+ * FAILED_SAFE both printed nothing.
+ *
+ * PDP_JOB_CONFLICT counts too: it means a settled Job already owns this exact
+ * intent, which is what a reopened past order looks like. Print Receipt there
+ * would only earn the same conflict, so hand the slot to Reprint.
+ */
+function _mayHavePrinted(outcome) {
+  if (!outcome) {
+    return false;
+  }
+  if (REPRINTABLE_OUTCOME_STATUSES.includes(outcome.status)) {
+    return true;
+  }
+  return outcome.error?.code === "PDP_JOB_CONFLICT";
+}
+
+/** Toggle a jQuery-like set, tolerating the absence of Desk's helpers. */
+function _setVisible(node, visible) {
+  if (!node || !node.length) {
+    return;
+  }
+  if (typeof node.toggle === "function") {
+    node.toggle(visible);
+    return;
+  }
+  if (typeof node.css === "function") {
+    node.css("display", visible ? "" : "none");
+  }
 }
 
 /**
