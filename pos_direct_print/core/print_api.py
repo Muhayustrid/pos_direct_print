@@ -40,6 +40,31 @@ def resolve_terminal(terminal_id):
 
 
 @frappe.whitelist()
+def disable_terminals(terminal_ids):
+	"""Retire selected terminals without deleting audit references."""
+	if "System Manager" not in frappe.get_roles(frappe.session.user):
+		frappe.throw(
+			_("PDP_PERMISSION_DENIED: System Manager role is required."),
+			exc=frappe.PermissionError,
+		)
+	terminal_ids = frappe.parse_json(terminal_ids)
+	if not isinstance(terminal_ids, list) or not terminal_ids:
+		frappe.throw(
+			_("PDP_CONFIG_INVALID: select at least one terminal."),
+			exc=frappe.ValidationError,
+		)
+	for terminal_id in terminal_ids:
+		if not frappe.db.exists("POS Print Terminal", terminal_id):
+			frappe.throw(
+				_("PDP_TERMINAL_NOT_FOUND: terminal {0} does not exist.").format(terminal_id),
+				exc=frappe.ValidationError,
+			)
+	for terminal_id in terminal_ids:
+		frappe.db.set_value("POS Print Terminal", terminal_id, "enabled", 0)
+	return {"disabled": len(terminal_ids)}
+
+
+@frappe.whitelist()
 def resolve_terminal_for_profile(company, pos_profile):
 	"""Row-scoped read-only lookup: the enabled, QUALIFIED terminal for a
 	Company + POS Profile. Returns the NEW terminal transport projection only.
@@ -61,23 +86,31 @@ def resolve_terminal_for_profile(company, pos_profile):
 				_("PDP_PERMISSION_DENIED: POS Profile is outside your authorized scope."),
 				exc=frappe.PermissionError,
 			)
-	name = frappe.db.get_value(
-		"POS Print Terminal",
-		{"company": company, "pos_profile": pos_profile, "enabled": 1},
-		"name",
-		order_by="creation asc",
-	)
+	filters = {
+		"company": company,
+		"pos_profile": pos_profile,
+		"enabled": 1,
+		"qualification_status": "QUALIFIED",
+	}
+	name = frappe.db.get_value("POS Print Terminal", filters, "name", order_by="creation asc")
 	if not name:
+		enabled = frappe.db.get_value(
+			"POS Print Terminal",
+			{"company": company, "pos_profile": pos_profile, "enabled": 1},
+			"name",
+		)
+		if enabled:
+			frappe.throw(
+				_("PDP_TERMINAL_NOT_QUALIFIED: no qualified terminal for {0} / {1}.").format(
+					company, pos_profile
+				),
+				exc=frappe.ValidationError,
+			)
 		frappe.throw(
 			_("PDP_TERMINAL_NOT_FOUND: no enabled terminal for {0} / {1}.").format(company, pos_profile),
 			exc=frappe.ValidationError,
 		)
 	terminal = frappe.get_doc("POS Print Terminal", name)
-	if terminal.qualification_status != "QUALIFIED":
-		frappe.throw(
-			_("PDP_TERMINAL_NOT_QUALIFIED: terminal {0} is not qualified.").format(name),
-			exc=frappe.ValidationError,
-		)
 	return {
 		"terminal_id": terminal.terminal_id,
 		"transport": terminal.transport,

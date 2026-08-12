@@ -8,6 +8,7 @@ from pos_direct_print.core.print_api import (
 	bind_receipt_snapshot,
 	cancel_job,
 	complete_attempt,
+	disable_terminals,
 	fallback_to_browser,
 	get_settings,
 	re_reserve_job,
@@ -57,6 +58,19 @@ class TestPrintApiTransport(IntegrationTestCase):
 			settings = get_settings()
 		self.assertIn("operating_mode", settings)
 		self.assertNotIn("job_retention_days", settings)
+
+	def test_system_manager_can_bulk_disable_terminals(self):
+		with _user("Administrator"):
+			result = disable_terminals([self.terminal, self.terminal_b])
+		self.assertEqual(result, {"disabled": 2})
+		self.assertEqual(frappe.db.get_value("POS Print Terminal", self.terminal, "enabled"), 0)
+		self.assertEqual(frappe.db.get_value("POS Print Terminal", self.terminal_b, "enabled"), 0)
+
+	def test_operator_cannot_bulk_disable_terminals(self):
+		with _user(self.operator):
+			with self.assertRaises(frappe.PermissionError):
+				disable_terminals([self.terminal])
+		self.assertEqual(frappe.db.get_value("POS Print Terminal", self.terminal, "enabled"), 1)
 
 	def test_resolve_terminal_returns_runtime_projection(self):
 		with _user("Administrator"):
@@ -626,6 +640,13 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError) as ctx:
 				resolve_terminal_for_profile(COMPANY, self.profile)
 		self.assertIn("PDP_TERMINAL_NOT_QUALIFIED", str(ctx.exception))
+
+	def test_qualified_terminal_wins_over_older_unverified_terminal(self):
+		_terminal(self.profile, qualification_status="UNVERIFIED", transport="UNKNOWN")
+		qualified = _terminal(self.profile, qualification_status="QUALIFIED", transport="SPI")
+		with _user(self.operator):
+			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertEqual(projection["terminal_id"], qualified)
 
 	def test_two_enabled_terminals_returns_oldest(self):
 		older = _terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
