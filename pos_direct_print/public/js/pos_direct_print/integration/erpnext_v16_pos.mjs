@@ -31,6 +31,7 @@ export class POSIntegrationAdapter {
     // Per-session terminal resolution cache, keyed company|pos_profile.
     this._terminal_cache = new Map();
     this.override_handle = null;
+    this.reprint_handle = null;
   }
 
   /**
@@ -104,7 +105,187 @@ export class POSIntegrationAdapter {
     target.prototype.print_receipt = target.original_method;
     target.installed = false;
     this.override_handle = null;
+    this.restoreReprintButton();
     return true;
+  }
+
+  /**
+   * Add a Reprint button to the Past Order Summary (A.31.19-A.31.21).
+   *
+   * A repeated ORIGINAL print is refused by design: the idempotency key is
+   * derived from the invoice and terminal with no timestamp, so a second click
+   * joins the settled Job instead of printing again. A second physical copy is
+   * legal only as a REPRINT — a new Job, with an authorized requester and a
+   * mandatory reason. This button is that path.
+   *
+   * Renders only for POS Print Manager / System Manager: Operator has no
+   * reprint authority (the server enforces this too — the hidden button is
+   * convenience, never the control).
+   */
+  installReprintButton(print_manager, pos_context) {
+    const prototype = _prototypeFrom(pos_context);
+    if (!prototype || typeof prototype.add_summary_btns !== "function") {
+      return false;
+    }
+    if (this.reprint_handle) {
+      if (this.reprint_handle.prototype === prototype) {
+        return true;
+      }
+      this.restoreReprintButton();
+    }
+    if (!this._hasReprintRole()) {
+      return false;
+    }
+
+    const original_add_summary_btns = prototype.add_summary_btns;
+    const adapter = this;
+
+    prototype.add_summary_btns = function patched_add_summary_btns(map) {
+      const result = original_add_summary_btns.call(this, map);
+      adapter._appendReprintButton(this, print_manager);
+      return result;
+    };
+
+    this.reprint_handle = {
+      prototype,
+      original_add_summary_btns,
+      installed: true,
+    };
+    return true;
+  }
+
+  restoreReprintButton() {
+    const target = this.reprint_handle;
+    if (!target || !target.installed) {
+      return false;
+    }
+    target.prototype.add_summary_btns = target.original_add_summary_btns;
+    target.installed = false;
+    this.reprint_handle = null;
+    return true;
+  }
+
+  /**
+   * Ask for the mandatory reason, then run the reprint through PrintManager.
+   * Resolves with the PrintOutcome, or null when the operator dismisses the
+   * prompt. Never falls back to browser print: a reprint the cashier could not
+   * authorize is not a reprint.
+   */
+  requestReprint(summary, print_manager) {
+    const doc = summary?.frm?.doc || summary?.doc;
+    if (!doc || !doc.name) {
+      return Promise.reject(
+        makeError("PDP_RECEIPT_INVALID", {
+          phase: "RECEIPT",
+          metadata: { reason: "no invoice document in POS context" },
+        })
+      );
+    }
+
+    return this._promptReprintReason().then((reason) => {
+      if (!reason) {
+        return null;
+      }
+      return print_manager.reprintInvoice(
+        {
+          reference_doctype: doc.doctype,
+          reference_name: doc.name,
+          terminal_id:
+            summary?.terminal_id ||
+            summary?.pos_direct_print_terminal_id ||
+            null,
+        },
+        { invoice_snapshot: doc, reason }
+      );
+    });
+  }
+
+  _appendReprintButton(summary, print_manager) {
+    const container = summary?.$summary_btns;
+    if (!container || typeof container.append !== "function") {
+      return;
+    }
+    // The summary re-renders its buttons on every order; only add ours when the
+    // current render actually offers printing.
+    if (!container.find(".print-btn").length) {
+      return;
+    }
+    if (container.find(".pdp-reprint-btn").length) {
+      return;
+    }
+
+    const label = _translate("Reprint");
+    const button = _jquery(
+      `<div class="summary-btn btn btn-default pdp-reprint-btn">${label}</div>`
+    );
+    if (!button) {
+      return;
+    }
+    const adapter = this;
+    button.on("click", () => {
+      adapter.requestReprint(summary, print_manager).catch((error) => {
+        adapter._showReprintError(error);
+      });
+    });
+    container.append(button);
+  }
+
+  _promptReprintReason() {
+    if (typeof frappe === "undefined" || typeof frappe.prompt !== "function") {
+      return Promise.reject(
+        makeError("PDP_CONFIG_INVALID", {
+          metadata: { reason: "frappe.prompt unavailable for reprint reason" },
+        })
+      );
+    }
+    return new Promise((resolve) => {
+      frappe.prompt(
+        {
+          fieldname: "reason",
+          fieldtype: "Small Text",
+          label: _translate("Reprint reason"),
+          reqd: 1,
+        },
+        (values) => resolve((values?.reason || "").trim()),
+        _translate("Reprint receipt"),
+        _translate("Reprint")
+      );
+      // A dismissed dialog never calls back; the promise stays pending and the
+      // click is simply abandoned, which is the intended no-op.
+    });
+  }
+
+  _showReprintError(error) {
+    const message =
+      error && error.code
+        ? `${error.code}: ${error.user_message || error.message_key || ""}`
+        : String(error?.message || error);
+    if (
+      typeof frappe !== "undefined" &&
+      typeof frappe.msgprint === "function"
+    ) {
+      frappe.msgprint({
+        title: _translate("Reprint failed"),
+        message,
+        indicator: "red",
+      });
+      return;
+    }
+    console.warn("pos_direct_print: reprint failed", message);
+  }
+
+  _hasReprintRole() {
+    if (
+      typeof frappe === "undefined" ||
+      !frappe.user ||
+      typeof frappe.user.has_role !== "function"
+    ) {
+      return false; // fail closed: no role information means no button
+    }
+    return (
+      frappe.user.has_role("POS Print Manager") ||
+      frappe.user.has_role("System Manager")
+    );
   }
 
   /**
@@ -343,6 +524,17 @@ function _prototypeFrom(context) {
     return context;
   }
   return context.prototype || context.PastOrderSummary || null;
+}
+
+/** Desk translation when available; the raw string otherwise (tests, node). */
+function _translate(text) {
+  return typeof __ === "function" ? __(text) : text;
+}
+
+/** Desk jQuery when available; null otherwise so callers degrade quietly. */
+function _jquery(html) {
+  const $ = typeof window !== "undefined" ? window.$ || window.jQuery : null;
+  return $ ? $(html) : null;
 }
 
 /**

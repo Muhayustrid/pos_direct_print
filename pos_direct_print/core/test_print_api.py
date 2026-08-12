@@ -13,6 +13,7 @@ from pos_direct_print.core.print_api import (
 	get_settings,
 	re_reserve_job,
 	release_reservation,
+	reprint_invoice,
 	reserve_print_job,
 	resolve_terminal,
 	resolve_terminal_for_profile,
@@ -23,6 +24,12 @@ from pos_direct_print.core.print_api import (
 from pos_direct_print.core.receipt_hash import hash_receipt
 
 COMPANY = "PT. JUARA ROTI INDONESIA"
+# The endpoint treats reference_doctype/reference_name as an opaque pair, so the
+# reprint tests point them at the test's own Terminal instead of a real POS
+# Invoice: the Dynamic Link resolves, and each test gets a reference nobody else
+# shares. Reusing Company here would let jobs from other test classes surface as
+# reprintable parents.
+REPRINT_REFERENCE_DOCTYPE = "POS Print Terminal"
 OUTLET_A = "yusuf"
 OUTLET_B = "POS Training"
 
@@ -666,6 +673,132 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 			with self.assertRaises(frappe.PermissionError) as ctx:
 				resolve_terminal_for_profile(other_company, self.profile)
 		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
+
+class TestReprintInvoice(IntegrationTestCase):
+	"""reprint_invoice — the POS entry to an authorized second physical copy.
+
+	It resolves the parent Job from the invoice (row-scoped), runs the full
+	core.reprint authorization chain, and returns a live reservation on the NEW
+	Job. A repeated ORIGINAL print stays refused by idempotency; this endpoint is
+	the only sanctioned way to a second copy.
+	"""
+
+	def setUp(self):
+		self.operator = _user_with_role("reprintapi.op@example.test", "POS Print Operator")
+		self.manager_a = _user_with_role("reprintapi.mgr.a@example.test", "POS Print Manager")
+		self.manager_b = _user_with_role("reprintapi.mgr.b@example.test", "POS Print Manager")
+		self.profile = _pos_profile("PDP Reprint Profile", self.operator)
+		self.other_profile = _pos_profile("PDP Reprint Other", self.operator)
+		_user_permission(self.manager_a, "POS Profile", self.profile)
+		_user_permission(self.manager_b, "POS Profile", self.other_profile)
+		self.terminal = _terminal(self.profile, qualification_status="QUALIFIED")
+		# Stands in for the printed invoice: unique per test, and a real record so
+		# the Job's Dynamic Link resolves.
+		self.invoice = self.terminal
+
+	def _parent(self, status="SUCCEEDED"):
+		return _reprint_job(
+			requested_by=self.operator,
+			pos_profile=self.profile,
+			terminal=self.terminal,
+			reference_name=self.invoice,
+			status=status,
+		)
+
+	def test_manager_gets_a_reserved_reprint_job_for_the_invoice(self):
+		parent = self._parent()
+		with _user(self.manager_a):
+			payload = reprint_invoice(REPRINT_REFERENCE_DOCTYPE, self.invoice, "Kertas tersangkut")
+
+		self.assertEqual(payload["parent_job_id"], parent.name)
+		self.assertEqual(payload["status"], "RESERVED")
+		self.assertTrue(payload["reservation_token"])
+		self.assertEqual(
+			payload["terminal_id"], frappe.db.get_value("POS Print Terminal", self.terminal, "terminal_id")
+		)
+
+		reprint = frappe.get_doc("POS Print Job", payload["job_id"])
+		self.assertEqual(reprint.job_type, "REPRINT")
+		self.assertEqual(reprint.parent_job, parent.name)
+		self.assertEqual(reprint.reprint_reason, "Kertas tersangkut")
+		self.assertEqual(reprint.requested_by, self.manager_a)
+		self.assertNotEqual(reprint.name, parent.name)
+
+		# The parent is never mutated into a reprint.
+		self.assertEqual(frappe.get_doc("POS Print Job", parent.name).job_type, "ORIGINAL")
+
+	def test_reservation_token_is_server_minted_not_the_caller(self):
+		self._parent()
+		with _user(self.manager_a):
+			payload = reprint_invoice(REPRINT_REFERENCE_DOCTYPE, self.invoice, "Audit reissue")
+		self.assertNotEqual(payload["reservation_token"], self.manager_a)
+		self.assertTrue(payload["reservation_token"].startswith("REPRINT-"))
+
+	def test_operator_denied(self):
+		self._parent()
+		with _user(self.operator):
+			with self.assertRaises(frappe.PermissionError):
+				reprint_invoice(REPRINT_REFERENCE_DOCTYPE, self.invoice, "Customer asked again")
+
+	def test_missing_reason_denied(self):
+		self._parent()
+		with _user(self.manager_a):
+			with self.assertRaises(frappe.MandatoryError):
+				reprint_invoice(REPRINT_REFERENCE_DOCTYPE, self.invoice, "   ")
+
+	def test_manager_outside_scope_denied(self):
+		self._parent()
+		with _user(self.manager_b):
+			with self.assertRaises((frappe.PermissionError, frappe.ValidationError)):
+				reprint_invoice(REPRINT_REFERENCE_DOCTYPE, self.invoice, "Reason")
+
+	def test_invoice_never_printed_is_not_found(self):
+		with _user(self.manager_a):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				reprint_invoice(REPRINT_REFERENCE_DOCTYPE, "POS-INV-NEVER", "Reason")
+		self.assertIn("PDP_JOB_NOT_FOUND", str(ctx.exception))
+
+	def test_non_reprintable_parent_state_is_not_found(self):
+		# PREFLIGHT is not a reprintable state, so the invoice has no eligible
+		# parent at all — the lookup refuses before the reprint chain runs.
+		self._parent(status="PREFLIGHT")
+		with _user(self.manager_a):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				reprint_invoice(REPRINT_REFERENCE_DOCTYPE, self.invoice, "Reason")
+		self.assertIn("PDP_JOB_NOT_FOUND", str(ctx.exception))
+
+	def test_newest_reprintable_job_becomes_the_parent(self):
+		self._parent()
+		newest = self._parent()
+		with _user(self.manager_a):
+			payload = reprint_invoice(REPRINT_REFERENCE_DOCTYPE, self.invoice, "Reason")
+		self.assertEqual(payload["parent_job_id"], newest.name)
+
+
+def _reprint_job(requested_by, pos_profile, terminal, reference_name, **overrides):
+	suffix = uuid.uuid4().hex[:8]
+	doc = frappe.get_doc(
+		{
+			"doctype": "POS Print Job",
+			"job_id": f"JOB-{suffix}",
+			"idempotency_key": f"idem-JOB-{suffix}",
+			# Company doubles as the reference target here so the Dynamic Link
+			# resolves without creating a real POS Invoice, matching the
+			# convention in the Job DocType tests.
+			"reference_doctype": REPRINT_REFERENCE_DOCTYPE,
+			"reference_name": reference_name,
+			"company": COMPANY,
+			"pos_profile": pos_profile,
+			"terminal": terminal,
+			"requested_by": requested_by,
+			"source": "POS_AUTO",
+			"driver_key": "imin_v1",
+			"reservation_owner": "client-x",
+		}
+	)
+	doc.update(overrides)
+	return doc.insert(ignore_permissions=True)
 
 
 class _user:

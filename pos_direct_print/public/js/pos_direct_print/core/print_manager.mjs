@@ -79,33 +79,86 @@ export class PrintManager {
         reservation_owner: context.reservation_owner,
         idempotency_key: context.idempotency_key,
       });
-      state.job_id = reservation.job_id;
-      state.reservation_token = reservation.reservation_token;
-      state.current = "RESERVED";
-
-      const receipt =
-        context.receipt || (await this._buildReceipt(request, context));
-
-      await this.coordinator.bindReceiptSnapshot({
-        job_id: reservation.job_id,
-        reservation_token: reservation.reservation_token,
-        receipt,
-      });
-
-      const driver = await this._selectDriver(request);
-
-      const started = await this.coordinator.beginAttempt({
-        job_id: reservation.job_id,
-        reservation_token: reservation.reservation_token,
-        terminal_id: request.terminal_id,
-      });
-      state.attempt_id = started.attempt.attempt_id;
-      state.current = "PREFLIGHT";
-
-      return await this._attemptCycle(driver, receipt, request, state);
+      return await this._runReservedCycle(reservation, request, context, state);
     } catch (raw) {
       return this._failureOutcome(state, raw);
     }
+  }
+
+  /**
+   * Authorized REPRINT of an invoice (A.31.19-A.31.21). The server owns the
+   * whole authorization chain and hands back a live reservation, so this method
+   * never reserves: it joins the returned reservation and runs the identical
+   * attempt cycle. A reprint is always a NEW Job — that is what makes a second
+   * physical copy legal where a repeated ORIGINAL print is not.
+   *
+   * @param {object} request PrintRequest-shaped; reference_doctype/name only.
+   * @param {object} context { invoice_snapshot, reason }
+   */
+  async reprintInvoice(request, context = {}) {
+    const state = {
+      current: "CREATED",
+      phase: "RESERVATION",
+      content_started: false,
+      from_state: "CREATED",
+    };
+
+    try {
+      const reservation = await this.coordinator.reprintInvoice({
+        reference_doctype: request.reference_doctype,
+        reference_name: request.reference_name,
+        reason: context.reason,
+        terminal_id: request.terminal_id,
+      });
+      // The server picked the terminal and driver for the reprint Job; the
+      // driver must match that Job, not whatever the POS context last cached.
+      const reprint_request = {
+        ...request,
+        job_type: "REPRINT",
+        terminal_id: reservation.terminal_id || request.terminal_id,
+        driver_key: reservation.driver_key || request.driver_key,
+      };
+      return await this._runReservedCycle(
+        reservation,
+        reprint_request,
+        context,
+        state
+      );
+    } catch (raw) {
+      return this._failureOutcome(state, raw);
+    }
+  }
+
+  /**
+   * Everything after the reservation exists: bind the receipt, select the
+   * driver, open an Attempt, run the cycle. Shared by requestPrint and
+   * reprintInvoice so neither path can drift from the frozen lifecycle.
+   */
+  async _runReservedCycle(reservation, request, context, state) {
+    state.job_id = reservation.job_id;
+    state.reservation_token = reservation.reservation_token;
+    state.current = "RESERVED";
+
+    const receipt =
+      context.receipt || (await this._buildReceipt(request, context));
+
+    await this.coordinator.bindReceiptSnapshot({
+      job_id: reservation.job_id,
+      reservation_token: reservation.reservation_token,
+      receipt,
+    });
+
+    const driver = await this._selectDriver(request);
+
+    const started = await this.coordinator.beginAttempt({
+      job_id: reservation.job_id,
+      reservation_token: reservation.reservation_token,
+      terminal_id: request.terminal_id,
+    });
+    state.attempt_id = started.attempt.attempt_id;
+    state.current = "PREFLIGHT";
+
+    return this._attemptCycle(driver, receipt, request, state);
   }
 
   /**

@@ -65,6 +65,51 @@ class InMemoryApi {
     };
   }
 
+  /** Server-side REPRINT: authorization runs server-side and returns a live
+   * reservation on a NEW Job. Mirrors the real endpoint's refusals. */
+  async reprintInvoice({ reference_doctype, reference_name, reason }) {
+    if (!reason || !String(reason).trim()) {
+      throw new Error("PDP_PERMISSION_DENIED: reprint_reason is mandatory");
+    }
+    const parent = [...this.jobs.values()]
+      .filter(
+        (job) =>
+          job.reference_doctype === reference_doctype &&
+          job.reference_name === reference_name &&
+          ["SUCCEEDED", "UNCERTAIN", "FALLBACK_BROWSER"].includes(job.status)
+      )
+      .pop();
+    if (!parent) {
+      throw new Error("PDP_JOB_NOT_FOUND: no reprintable print job");
+    }
+    const job_id = `JOB-${++this.sequence}`;
+    const owner = `REPRINT-${this.sequence}`;
+    this.jobs.set(job_id, {
+      job_id,
+      status: "RESERVED",
+      reservation_owner: owner,
+      idempotency_key: `reprint:${parent.job_id}:${this.sequence}`,
+      reference_doctype,
+      reference_name,
+      terminal: parent.terminal,
+      source: "REPRINT_UI",
+      job_type: "REPRINT",
+      driver_key: parent.driver_key,
+      parent_job: parent.job_id,
+      reprint_reason: reason,
+      content_may_have_printed: false,
+    });
+    return {
+      job_id,
+      reservation_token: owner,
+      reserved_until: null,
+      status: "RESERVED",
+      driver_key: parent.driver_key,
+      terminal_id: parent.terminal,
+      parent_job_id: parent.job_id,
+    };
+  }
+
   async reReserveJob({ job_id, initiator }) {
     const job = this.jobs.get(job_id);
     if (job.status !== "FAILED_SAFE") {
@@ -826,4 +871,199 @@ test("A-AT-11: safe retry reuses the SAME Job with a new Attempt", async () => {
     [1, 2],
     "second Attempt under the same Job"
   );
+});
+
+// ---------------------------------------------------- Reprint button (A.31.19)
+// A repeated ORIGINAL print is refused by idempotency, so the Reprint button is
+// the only POS path to a second physical copy. It renders for reprint-authorized
+// roles only, patches add_summary_btns exactly once, and restores on shutdown.
+
+/** Minimal jQuery stand-in: enough for the append/find/on the adapter uses. */
+function makeFakeNode(html = "") {
+  const node = {
+    html,
+    children: [],
+    handlers: {},
+    append(child) {
+      node.children.push(child);
+      return node;
+    },
+    find(selector) {
+      const cls = selector.replace(".", "");
+      const hits = node.children.filter((child) => child.html.includes(cls));
+      return { length: hits.length };
+    },
+    on(event, handler) {
+      node.handlers[event] = handler;
+      return node;
+    },
+  };
+  return node;
+}
+
+function makeSummaryPrototype() {
+  return {
+    print_receipt() {
+      return "original-printed";
+    },
+    add_summary_btns() {
+      return "rendered";
+    },
+  };
+}
+
+/** Install the Desk globals the button path reads; returns a restore fn. */
+function withDeskGlobals({ roles = [], captured = {} } = {}) {
+  const saved = {
+    frappe: globalThis.frappe,
+    translate: globalThis.__,
+    window: globalThis.window,
+  };
+  globalThis.__ = (text) => text;
+  globalThis.frappe = {
+    user: { has_role: (role) => roles.includes(role) },
+    prompt: (field, callback) => {
+      captured.field = field;
+      captured.respond = callback;
+    },
+    msgprint: (payload) => {
+      captured.msgprint = payload;
+    },
+  };
+  globalThis.window = { $: (html) => makeFakeNode(html) };
+  return () => {
+    globalThis.frappe = saved.frappe;
+    globalThis.__ = saved.translate;
+    globalThis.window = saved.window;
+  };
+}
+
+function makeReprintAdapter() {
+  return new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
+  });
+}
+
+test("reprint button renders for a Manager and patches add_summary_btns once", () => {
+  const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
+  try {
+    const { manager } = makeFoundation();
+    const prototype = makeSummaryPrototype();
+    const adapter = makeReprintAdapter();
+    const original = prototype.add_summary_btns;
+
+    assert.equal(adapter.installReprintButton(manager, prototype), true);
+    assert.notEqual(prototype.add_summary_btns, original);
+
+    // Idempotent: a second install keeps the single patch in place.
+    const patched = prototype.add_summary_btns;
+    assert.equal(adapter.installReprintButton(manager, prototype), true);
+    assert.equal(prototype.add_summary_btns, patched);
+
+    const summary = { $summary_btns: makeFakeNode() };
+    summary.$summary_btns.append(makeFakeNode("print-btn"));
+    prototype.add_summary_btns.call(summary, []);
+    assert.equal(
+      summary.$summary_btns.children.some((child) =>
+        child.html.includes("pdp-reprint-btn")
+      ),
+      true
+    );
+
+    assert.equal(adapter.restoreReprintButton(), true);
+    assert.equal(prototype.add_summary_btns, original);
+  } finally {
+    restore();
+  }
+});
+
+test("reprint button is withheld from an Operator", () => {
+  const restore = withDeskGlobals({ roles: ["POS Print Operator"] });
+  try {
+    const { manager } = makeFoundation();
+    const prototype = makeSummaryPrototype();
+    const original = prototype.add_summary_btns;
+
+    assert.equal(
+      makeReprintAdapter().installReprintButton(manager, prototype),
+      false
+    );
+    assert.equal(prototype.add_summary_btns, original, "prototype untouched");
+  } finally {
+    restore();
+  }
+});
+
+test("requestReprint demands a reason and routes it to the manager", async () => {
+  const captured = {};
+  const restore = withDeskGlobals({ roles: ["System Manager"], captured });
+  try {
+    const { manager, api } = makeFoundation();
+    const adapter = makeReprintAdapter();
+    const prototype = makeSummaryPrototype();
+    adapter.installOverride(manager, prototype);
+
+    // An ORIGINAL print must exist first — a reprint needs a parent Job.
+    await prototype.print_receipt.call(makeSummary());
+
+    const pending = adapter.requestReprint(makeSummary(), manager);
+    assert.equal(captured.field.reqd, 1, "reason field is mandatory");
+    captured.respond({ reason: "struk sobek" });
+
+    const outcome = await pending;
+    assert.equal(outcome.success, true);
+    const job = api.jobs.get(outcome.job_id);
+    assert.equal(job.job_type, "REPRINT");
+    assert.equal(job.reprint_reason, "struk sobek");
+  } finally {
+    restore();
+  }
+});
+
+test("requestReprint abandons the click when the reason is left blank", async () => {
+  const captured = {};
+  const restore = withDeskGlobals({ roles: ["System Manager"], captured });
+  try {
+    const { manager, api } = makeFoundation();
+    const adapter = makeReprintAdapter();
+    const prototype = makeSummaryPrototype();
+    adapter.installOverride(manager, prototype);
+    await prototype.print_receipt.call(makeSummary());
+    const jobs_before = api.jobs.size;
+
+    const pending = adapter.requestReprint(makeSummary(), manager);
+    captured.respond({ reason: "   " });
+
+    assert.equal(await pending, null);
+    assert.equal(api.jobs.size, jobs_before, "no reprint Job created");
+  } finally {
+    restore();
+  }
+});
+
+test("shutdown restores both the print override and the reprint button", () => {
+  const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
+  try {
+    const { manager } = makeFoundation();
+    const prototype = makeSummaryPrototype();
+    const original_print = prototype.print_receipt;
+    const original_btns = prototype.add_summary_btns;
+    const adapter = makeReprintAdapter();
+
+    adapter.installOverride(manager, prototype);
+    adapter.installReprintButton(manager, prototype);
+    assert.notEqual(prototype.print_receipt, original_print);
+    assert.notEqual(prototype.add_summary_btns, original_btns);
+
+    assert.equal(adapter.restoreOverride(), true);
+    assert.equal(prototype.print_receipt, original_print);
+    assert.equal(
+      prototype.add_summary_btns,
+      original_btns,
+      "restoreOverride also unpatches the button"
+    );
+  } finally {
+    restore();
+  }
 });
