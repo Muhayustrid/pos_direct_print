@@ -3,12 +3,18 @@
 // (12 dots per glyph). `final_feed` is a dot-row height passed to
 // printAndFeedPaper, not a line count — the reference demo feeds 50-100 dots to
 // clear the tear bar, so 4 was far too small to advance the paper.
+//
+// `page_format` and `text_width_dots` are null by default: both stay UNQUALIFIED
+// on the reference device. The SDK documents no meaning for setPageFormat's
+// style argument, and the head is natively 384 dots for 58mm, so sending either
+// command only risks putting the printer in an unverified state. Set them on a
+// profile once hardware UAT proves a device needs them.
 const DEFAULTS = Object.freeze({
   key: "reference_58mm",
   width_mm: 58,
   logical_width: 32,
-  page_format: 1,
-  text_width_dots: 384,
+  page_format: null,
+  text_width_dots: null,
   text_size: 24,
   final_feed: 100,
 });
