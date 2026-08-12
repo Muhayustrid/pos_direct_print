@@ -884,14 +884,37 @@ function makeFakeNode(html = "") {
     html,
     children: [],
     handlers: {},
+    length: 1,
+    visible: !html.includes("display: none"),
     append(child) {
       node.children.push(child);
       return node;
     },
     find(selector) {
+      // Match whole class tokens like jQuery does. Substring matching would be
+      // a lie here: "pdp-reprint-btn" contains "print-btn", so a sloppy fake
+      // would let a .print-btn lookup hit the Reprint button too.
       const cls = selector.replace(".", "");
-      const hits = node.children.filter((child) => child.html.includes(cls));
-      return { length: hits.length };
+      const hits = node.children.filter((child) =>
+        _classesOf(child.html).includes(cls)
+      );
+      return {
+        length: hits.length,
+        css(property, value) {
+          hits.forEach((hit) => {
+            if (property === "display") {
+              hit.visible = value !== "none";
+            }
+          });
+          return this;
+        },
+      };
+    },
+    css(property, value) {
+      if (property === "display") {
+        node.visible = value !== "none";
+      }
+      return node;
     },
     on(event, handler) {
       node.handlers[event] = handler;
@@ -899,6 +922,12 @@ function makeFakeNode(html = "") {
     },
   };
   return node;
+}
+
+/** Class tokens of a fake node's html; bare markers count as a single class. */
+function _classesOf(html) {
+  const attribute = /class="([^"]*)"/.exec(html);
+  return (attribute ? attribute[1] : html).trim().split(/\s+/);
 }
 
 function makeSummaryPrototype() {
@@ -964,12 +993,14 @@ test("reprint button renders for a Manager and patches add_summary_btns once", (
     const summary = { $summary_btns: makeFakeNode() };
     summary.$summary_btns.append(makeFakeNode("print-btn"));
     prototype.add_summary_btns.call(summary, []);
-    assert.equal(
-      summary.$summary_btns.children.some((child) =>
-        child.html.includes("pdp-reprint-btn")
-      ),
-      true
+    const reprint_btn = _childWithClass(
+      summary.$summary_btns,
+      "pdp-reprint-btn"
     );
+    assert.ok(reprint_btn, "reprint button appended");
+    // It starts hidden: Print Receipt owns the slot until a print settles with
+    // content possibly on paper.
+    assert.equal(reprint_btn.visible, false);
 
     assert.equal(adapter.restoreReprintButton(), true);
     assert.equal(prototype.add_summary_btns, original);
@@ -1063,6 +1094,102 @@ test("shutdown restores both the print override and the reprint button", () => {
       original_btns,
       "restoreOverride also unpatches the button"
     );
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * One slot, two buttons: render the summary's button row the way ERPNext does,
+ * then run the intercepted print. Returns the row plus its two button handles.
+ */
+async function printThroughSummaryRow(adapter, manager, prototype) {
+  adapter.installOverride(manager, prototype);
+  adapter.installReprintButton(manager, prototype);
+
+  const summary = makeSummary();
+  summary.$summary_btns = makeFakeNode();
+  summary.$summary_btns.append(makeFakeNode("print-btn"));
+  prototype.add_summary_btns.call(summary, []);
+
+  const outcome = await prototype.print_receipt.call(summary);
+  return {
+    outcome,
+    print_btn: _childWithClass(summary.$summary_btns, "print-btn"),
+    reprint_btn: _childWithClass(summary.$summary_btns, "pdp-reprint-btn"),
+  };
+}
+
+/** Exact-class child lookup; substring matching would confuse the two buttons. */
+function _childWithClass(container, cls) {
+  return container.children.find((child) =>
+    _classesOf(child.html).includes(cls)
+  );
+}
+
+test("Reprint takes over the Print Receipt slot once content may be on paper", async () => {
+  const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
+  try {
+    const { manager } = makeFoundation();
+    const { outcome, print_btn, reprint_btn } = await printThroughSummaryRow(
+      makeReprintAdapter(),
+      manager,
+      makeSummaryPrototype()
+    );
+
+    assert.equal(outcome.status, "SUCCEEDED");
+    // Exactly one of the two occupies the slot, so the row keeps its layout.
+    assert.equal(print_btn.visible, false, "Print Receipt yields its slot");
+    assert.equal(reprint_btn.visible, true, "Reprint takes the slot");
+  } finally {
+    restore();
+  }
+});
+
+test("a pre-output failure keeps Print Receipt in the slot", async () => {
+  const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
+  try {
+    // FAILED_SAFE printed nothing, so a plain second print is still legal and
+    // the cashier must not be pushed down the reprint path.
+    const { manager } = makeFoundation({
+      driver_script: { print_behavior: "fail_before_content" },
+    });
+    const { outcome, print_btn, reprint_btn } = await printThroughSummaryRow(
+      makeReprintAdapter(),
+      manager,
+      makeSummaryPrototype()
+    );
+
+    assert.equal(outcome.status, "FAILED_SAFE");
+    assert.equal(print_btn.visible, true, "Print Receipt keeps the slot");
+    assert.equal(reprint_btn.visible, false, "Reprint stays hidden");
+  } finally {
+    restore();
+  }
+});
+
+test("reopening an already-printed order hands the slot to Reprint", async () => {
+  const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
+  try {
+    const { manager } = makeFoundation();
+    const adapter = makeReprintAdapter();
+    const prototype = makeSummaryPrototype();
+
+    // First print settles SUCCEEDED. Reopening the order renders a fresh button
+    // row, and the print there hits the settled Job through the unchanged
+    // idempotency key: PDP_JOB_CONFLICT, no second copy. The slot must still
+    // flip, or the cashier is left clicking a button that can only ever fail.
+    await printThroughSummaryRow(adapter, manager, prototype);
+    const { outcome, print_btn, reprint_btn } = await printThroughSummaryRow(
+      adapter,
+      manager,
+      prototype
+    );
+
+    assert.equal(outcome.success, false);
+    assert.equal(outcome.error.code, "PDP_JOB_CONFLICT");
+    assert.equal(print_btn.visible, false, "Print Receipt yields its slot");
+    assert.equal(reprint_btn.visible, true, "Reprint takes the slot");
   } finally {
     restore();
   }
