@@ -97,6 +97,11 @@ export class SubsystemBootstrap {
     if (context.pos_context && adapter.isSupported(context.pos_context)) {
       adapter.installOverride(manager, context.pos_context);
       integration_installed = true;
+      // Reprint is the only legal way to a second physical copy; the button
+      // renders for reprint-authorized roles only and never blocks bootstrap.
+      if (!adapter.installReprintButton(manager, context.pos_context)) {
+        warnings.push("reprint button not installed");
+      }
     } else {
       warnings.push("ERPNext POS prototype not available; override deferred");
     }

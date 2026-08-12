@@ -90,6 +90,56 @@ class InMemoryApi {
     return { job: { status: job.status }, attempt };
   }
 
+  /**
+   * Server-side REPRINT: authorization runs on the server, which answers with
+   * a live reservation on a NEW Job. The fake enforces the same rules the real
+   * endpoint does — reprintable parent state, mandatory reason — so the manager
+   * test exercises the real refusals.
+   */
+  async reprintInvoice({ reference_doctype, reference_name, reason }) {
+    this.events.push("reprintInvoice");
+    if (!reason || !String(reason).trim()) {
+      throw new Error("PDP_PERMISSION_DENIED: reprint_reason is mandatory");
+    }
+    const parent = [...this.jobs.values()]
+      .filter(
+        (job) =>
+          job.reference_doctype === reference_doctype &&
+          job.reference_name === reference_name &&
+          ["SUCCEEDED", "UNCERTAIN", "FALLBACK_BROWSER"].includes(job.status)
+      )
+      .pop();
+    if (!parent) {
+      throw new Error("PDP_JOB_NOT_FOUND: no reprintable print job");
+    }
+    const job_id = `JOB-${++this.sequence}`;
+    const owner = `REPRINT-${this.sequence}`;
+    this.jobs.set(job_id, {
+      job_id,
+      status: "RESERVED",
+      reservation_owner: owner,
+      idempotency_key: `reprint:${parent.job_id}:${this.sequence}`,
+      reference_doctype,
+      reference_name,
+      terminal: parent.terminal,
+      source: "REPRINT_UI",
+      job_type: "REPRINT",
+      driver_key: parent.driver_key,
+      parent_job: parent.job_id,
+      reprint_reason: reason,
+      content_may_have_printed: false,
+    });
+    return {
+      job_id,
+      reservation_token: owner,
+      reserved_until: null,
+      status: "RESERVED",
+      driver_key: parent.driver_key,
+      terminal_id: parent.terminal,
+      parent_job_id: parent.job_id,
+    };
+  }
+
   async reReserveJob({ job_id, initiator }) {
     this.events.push("reReserve");
     const job = this.jobs.get(job_id);
@@ -596,4 +646,90 @@ test("browser handoff result still settles FALLBACK_BROWSER", async () => {
 
   assert.equal(manager._settleStatus(result), "FALLBACK_BROWSER");
   assert.notEqual(manager._settleStatus(result), "SUCCEEDED");
+});
+
+// ------------------------------------------------------------------- REPRINT
+// A repeated ORIGINAL print is refused by idempotency; a second physical copy
+// is legal only as a REPRINT — a NEW Job carrying a mandatory reason.
+
+test("repeating an ORIGINAL print joins the settled Job instead of printing again", async () => {
+  const { manager, api, trace } = makeFoundation();
+
+  const first = await request(manager);
+  assert.equal(first.status, "SUCCEEDED");
+
+  trace.length = 0;
+  const second = await request(manager);
+
+  // Same Job, and no driver dispatch on the second call.
+  assert.equal(second.job_id, first.job_id);
+  assert.equal(second.success, false);
+  assert.equal(trace.includes("print"), false);
+  assert.equal(api.jobs.size, 1, "no second Job was created");
+});
+
+test("reprintInvoice creates a NEW Job that prints and settles SUCCEEDED", async () => {
+  const { manager, api } = makeFoundation();
+
+  const original = await request(manager);
+  assert.equal(original.status, "SUCCEEDED");
+
+  const reprint = await manager.reprintInvoice(
+    {
+      reference_doctype: "POS Invoice",
+      reference_name: "POS-INV-LC-1",
+      terminal_id: "TERM-1",
+      driver_key: "fake",
+    },
+    { invoice_snapshot: { name: "POS-INV-LC-1" }, reason: "kertas tersangkut" }
+  );
+
+  assert.equal(reprint.status, "SUCCEEDED");
+  assert.equal(reprint.success, true);
+  assert.notEqual(reprint.job_id, original.job_id, "reprint is a new Job");
+  assert.equal(api.jobs.size, 2);
+
+  const job = api.jobs.get(reprint.job_id);
+  assert.equal(job.job_type, "REPRINT");
+  assert.equal(job.parent_job, original.job_id);
+  assert.equal(job.reprint_reason, "kertas tersangkut");
+});
+
+test("reprintInvoice without a reason is refused and prints nothing", async () => {
+  const { manager, api, trace } = makeFoundation();
+  await request(manager);
+  trace.length = 0;
+
+  const outcome = await manager.reprintInvoice(
+    {
+      reference_doctype: "POS Invoice",
+      reference_name: "POS-INV-LC-1",
+      terminal_id: "TERM-1",
+      driver_key: "fake",
+    },
+    { invoice_snapshot: { name: "POS-INV-LC-1" }, reason: "   " }
+  );
+
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.error.code, "PDP_PERMISSION_DENIED");
+  assert.equal(trace.includes("print"), false);
+  assert.equal(api.jobs.size, 1, "no Job created for a refused reprint");
+});
+
+test("reprintInvoice with no reprintable parent Job fails safe", async () => {
+  const { manager, trace } = makeFoundation();
+
+  const outcome = await manager.reprintInvoice(
+    {
+      reference_doctype: "POS Invoice",
+      reference_name: "POS-INV-NEVER-PRINTED",
+      terminal_id: "TERM-1",
+      driver_key: "fake",
+    },
+    { invoice_snapshot: { name: "POS-INV-NEVER-PRINTED" }, reason: "coba" }
+  );
+
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.job_id, null);
+  assert.equal(trace.includes("print"), false);
 });

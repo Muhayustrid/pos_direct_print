@@ -56,6 +56,35 @@ export class JobCoordinator {
     };
   }
 
+  /**
+   * Authorized REPRINT: the server runs the whole authorization chain and
+   * returns a live reservation on a NEW Job. The client never names the parent
+   * Job — it only supplies the invoice and the mandatory reason.
+   */
+  async reprintInvoice({
+    reference_doctype,
+    reference_name,
+    reason,
+    terminal_id = null,
+  }) {
+    const result = await this.api.reprintInvoice({
+      reference_doctype,
+      reference_name,
+      reason,
+      terminal_id,
+    });
+    return {
+      job_id: result.job_id,
+      reservation_token: result.reservation_token,
+      reserved_until: result.reserved_until,
+      status: result.status,
+      is_new_job: true, // a reprint is always a new Job
+      terminal_id: result.terminal_id || null,
+      driver_key: result.driver_key || null,
+      parent_job_id: result.parent_job_id || null,
+    };
+  }
+
   async beginAttempt({ job_id, reservation_token, terminal_id = null }) {
     return this.api.startAttempt({ job_id, reservation_token, terminal_id });
   }

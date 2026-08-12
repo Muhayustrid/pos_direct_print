@@ -10,6 +10,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, now_datetime
 
+from pos_direct_print.core import reprint as reprint_service
 from pos_direct_print.core import reservation as reservation_service
 from pos_direct_print.core.projections import (
 	job_status_projection,
@@ -118,6 +119,63 @@ def resolve_terminal_for_profile(company, pos_profile):
 		"paper_width_mm": terminal.paper_width_mm,
 		"qualification_status": terminal.qualification_status,
 	}
+
+
+@frappe.whitelist()
+def reprint_invoice(reference_doctype, reference_name, reason, terminal_id=None):
+	"""Authorize a REPRINT for an invoice and hand back a live reservation.
+
+	The POS client knows an invoice, not a Job id, so this endpoint owns the
+	whole authorized entry: find the latest reprintable Job for that invoice
+	(row-scoped), run the full REPRINT authorization chain in core.reprint, then
+	start a reservation cycle with a server-minted owner. The client never names
+	the parent Job and never learns a reservation owner outside the returned
+	token.
+
+	Returns the same reservation payload shape as reserve_print_job, plus the
+	terminal and driver the reprint must use, so the client drives the identical
+	attempt cycle.
+	"""
+	user = frappe.session.user
+	parent = _latest_reprintable_job(reference_doctype, reference_name, user)
+	created = reprint_service.request_reprint(parent.name, reason, terminal_id or parent.terminal)
+
+	owner = f"REPRINT-{frappe.generate_hash(length=24)}"
+	reserved = reservation_service.reserve_job(created["job_id"], owner)
+	payload = _reservation_payload(reserved)
+	payload["driver_key"] = reserved.driver_key
+	payload["terminal_id"] = frappe.db.get_value("POS Print Terminal", reserved.terminal, "terminal_id")
+	payload["parent_job_id"] = parent.name
+	return payload
+
+
+def _latest_reprintable_job(reference_doctype, reference_name, user):
+	"""Newest Job for an invoice whose state permits a reprint, row-scoped.
+
+	Scope comes from the same document permission check the rest of the
+	transport uses, so a Manager outside the Job's Company/POS Profile is
+	refused here rather than inside the reprint chain.
+	"""
+	names = frappe.get_all(
+		"POS Print Job",
+		filters={
+			"reference_doctype": reference_doctype,
+			"reference_name": reference_name,
+			"status": ("in", reprint_service.REPRINTABLE_STATUSES),
+		},
+		pluck="name",
+		order_by="creation desc",
+		limit=1,
+		ignore_permissions=True,
+	)
+	if not names:
+		frappe.throw(
+			_("PDP_JOB_NOT_FOUND: no reprintable print job for {0} {1}.").format(
+				reference_doctype, reference_name
+			),
+			exc=frappe.ValidationError,
+		)
+	return _scoped_job(names[0], user)
 
 
 @frappe.whitelist()
