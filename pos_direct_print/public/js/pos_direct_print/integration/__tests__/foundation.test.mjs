@@ -12,10 +12,14 @@ import { test } from "node:test";
 import { SubsystemBootstrap } from "../../core/bootstrap.mjs";
 import { CapabilityRegistry } from "../../core/capability_registry.mjs";
 import { JobCoordinator } from "../../core/job_coordinator.mjs";
+import { makeError } from "../../core/errors.mjs";
 import { VALID_TRANSITIONS } from "../../core/print_job.mjs";
 import { PrintManager } from "../../core/print_manager.mjs";
 import { FakeDriver } from "../../drivers/fake_driver.mjs";
-import { POSIntegrationAdapter } from "../erpnext_v16_pos.mjs";
+import {
+  POSIntegrationAdapter,
+  computeIdempotencyKey,
+} from "../erpnext_v16_pos.mjs";
 
 /** In-memory stand-in for the server transport — mirrors the RPC contract. */
 class InMemoryApi {
@@ -61,10 +65,36 @@ class InMemoryApi {
     };
   }
 
-  async startAttempt({ job_id }) {
+  async reReserveJob({ job_id, initiator }) {
+    const job = this.jobs.get(job_id);
+    if (job.status !== "FAILED_SAFE") {
+      throw new Error(
+        `PDP_JOB_CONFLICT: expected FAILED_SAFE, is ${job.status}`
+      );
+    }
+    const owner = `RETRY-${++this.sequence}`;
+    if (owner === initiator) {
+      throw new Error(
+        "PDP_JOB_CONFLICT: retry owner must differ from initiator"
+      );
+    }
+    job.reservation_owner = owner;
+    job.status = "RESERVED";
+    return {
+      job_id,
+      reservation_token: owner,
+      reserved_until: null,
+      status: job.status,
+    };
+  }
+
+  async startAttempt({ job_id, reservation_token }) {
     const job = this.jobs.get(job_id);
     if (job.status !== "RESERVED") {
       throw new Error(`PDP_JOB_CONFLICT: expected RESERVED, is ${job.status}`);
+    }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
     }
     job.status = "PREFLIGHT";
     const attempt_no =
@@ -81,7 +111,30 @@ class InMemoryApi {
     return { job: { status: job.status }, attempt };
   }
 
-  async transitionJob({ job_id, expected_from_state, target_state }) {
+  async bindReceiptSnapshot({
+    job_id,
+    reservation_token,
+    receipt_snapshot,
+    receipt_hash,
+  }) {
+    const job = this.jobs.get(job_id);
+    if (job.status !== "RESERVED") {
+      throw new Error(`PDP_JOB_CONFLICT: expected RESERVED, is ${job.status}`);
+    }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
+    }
+    job.receipt_snapshot = receipt_snapshot;
+    job.receipt_hash = receipt_hash;
+    return { status: job.status };
+  }
+
+  async transitionJob({
+    job_id,
+    expected_from_state,
+    target_state,
+    reservation_token,
+  }) {
     const job = this.jobs.get(job_id);
     if (!VALID_TRANSITIONS.has(`${expected_from_state}->${target_state}`)) {
       throw new Error(
@@ -93,7 +146,36 @@ class InMemoryApi {
         `PDP_JOB_CONFLICT: expected ${expected_from_state}, is ${job.status}`
       );
     }
+    if (job.reservation_owner !== reservation_token) {
+      throw new Error(`PDP_JOB_CONFLICT: reservation owner mismatch`);
+    }
     job.status = target_state;
+    return { status: job.status };
+  }
+
+  async fallbackToBrowser({ job_id, approved }) {
+    const job = this.jobs.get(job_id);
+    if (!approved) {
+      throw new Error("PDP_PERMISSION_DENIED: explicit approval required");
+    }
+    if (job.content_may_have_printed) {
+      throw new Error("PDP_JOB_CONFLICT: physical content may have printed");
+    }
+    if (!VALID_TRANSITIONS.has(`${job.status}->FALLBACK_BROWSER`)) {
+      throw new Error(
+        `PDP_JOB_INVALID_TRANSITION: ${job.status}->FALLBACK_BROWSER`
+      );
+    }
+    job.status = "FALLBACK_BROWSER";
+    return { status: job.status };
+  }
+
+  async cancelJob({ job_id }) {
+    const job = this.jobs.get(job_id);
+    if (!VALID_TRANSITIONS.has(`${job.status}->CANCELLED`)) {
+      throw new Error(`PDP_JOB_INVALID_TRANSITION: ${job.status}->CANCELLED`);
+    }
+    job.status = "CANCELLED";
     return { status: job.status };
   }
 
@@ -145,7 +227,13 @@ function makeFoundation(settings = {}) {
     resolveDriver: (record) => record.manifest.factory(),
     buildReceipt: (snapshot) => ({
       schema_version: 1,
+      reference_doctype: "POS Invoice",
       reference_name: snapshot?.name,
+      locale: "id-ID",
+      currency: "IDR",
+      paper_profile: "58mm",
+      blocks: [],
+      metadata: {},
     }),
     default_driver_key: "fake",
   });
@@ -160,6 +248,8 @@ function makeSummary() {
         doctype: "POS Invoice",
         name: "POS-INV-001",
         owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
       },
     },
     terminal_id: "TERM-1",
@@ -168,13 +258,21 @@ function makeSummary() {
   };
 }
 
+/** Default fake resolver: fixed terminal, no server or localStorage. */
+async function fakeResolveTerminalContext() {
+  return { pos_direct_print_terminal_id: "TERM-1" };
+}
+
 function makeRequest(manager, settings) {
   const prototype = {
     print_receipt() {
       return "original-printed";
     },
   };
-  const adapter = new POSIntegrationAdapter({ get_settings: () => settings });
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => settings,
+    resolve_terminal_context: fakeResolveTerminalContext,
+  });
   const handle = adapter.installOverride(manager, prototype);
   return { prototype, adapter, handle };
 }
@@ -193,6 +291,7 @@ test("A-AT-04: initializing three times still yields exactly one PrintRequest", 
   // each initialize returns the same live handle and never repatches.
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const first = adapter.installOverride(manager, prototype);
   const second = adapter.installOverride(manager, prototype);
@@ -237,6 +336,7 @@ test("A-AT-05: restoring the override returns to the original print path", async
   };
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const handle = adapter.installOverride(manager, prototype);
 
@@ -286,6 +386,7 @@ test("A-AT-13: fake driver drives orchestration without any iMin dependency", as
   const { manager } = makeFoundation();
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -349,6 +450,7 @@ test("A-AT-15: raw driver exceptions normalize into a canonical user error", asy
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -373,6 +475,7 @@ test("content started without completion settles UNCERTAIN with reprint-only sem
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -389,6 +492,7 @@ test("pre-content failure settles FAILED_SAFE", async () => {
   });
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);
@@ -401,6 +505,281 @@ test("pre-content failure settles FAILED_SAFE", async () => {
 
 // ---------------------------------------------------------------- A-AT-11
 
+// ---------------------------------------------------------------- B4-01 context wiring
+
+test("computeIdempotencyKey is stable for identical inputs", () => {
+  const key = {
+    schema_version: 1,
+    reference_doctype: "POS Invoice",
+    reference_name: "POS-INV-001",
+    terminal_id: "TERM-1",
+    job_type: "ORIGINAL",
+  };
+  assert.equal(computeIdempotencyKey(key), computeIdempotencyKey(key));
+  assert.match(computeIdempotencyKey(key), /^pdpr1:[0-9a-f]{16}$/);
+});
+
+test("computeIdempotencyKey differs across invoices and terminals", () => {
+  const base = {
+    schema_version: 1,
+    reference_doctype: "POS Invoice",
+    terminal_id: "TERM-1",
+    job_type: "ORIGINAL",
+  };
+  const a = computeIdempotencyKey({ ...base, reference_name: "POS-INV-001" });
+  const b = computeIdempotencyKey({ ...base, reference_name: "POS-INV-002" });
+  const c = computeIdempotencyKey({
+    ...base,
+    reference_name: "POS-INV-001",
+    terminal_id: "TERM-2",
+  });
+  assert.notEqual(a, b);
+  assert.notEqual(a, c);
+});
+
+test("fake resolver context reaches buildPrintRequest (B4-01)", async () => {
+  const { manager } = makeFoundation();
+  const calls = [];
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true, receipt_schema_version: 1 }),
+    resolve_terminal_context: async (summary) => {
+      calls.push({ pos_profile: summary.frm.doc.pos_profile });
+      return {
+        pos_direct_print_terminal_id: "TERM-RESOLVED",
+        pos_direct_print_idempotency_key: "idem-resolved-1",
+        paired_client_id: "client-resolved-1",
+      };
+    },
+  });
+  const prototype = { print_receipt() {} };
+  adapter.installOverride(manager, prototype);
+
+  const summary = {
+    frm: {
+      doc: {
+        doctype: "POS Invoice",
+        name: "POS-INV-CTX-1",
+        owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
+      },
+    },
+  };
+
+  await prototype.print_receipt.call(summary);
+
+  assert.equal(calls.length, 1, "resolver invoked exactly once");
+  const request = manager.requests_received[0];
+  assert.equal(request.terminal_id, "TERM-RESOLVED");
+  assert.equal(request.source, "POS_AUTO");
+  assert.equal(request.job_type, "ORIGINAL");
+  assert.equal(request.reference_name, "POS-INV-CTX-1");
+});
+
+test("default resolve_context caches per company|pos_profile and assigns idempotency key", async () => {
+  const { manager } = makeFoundation();
+  let resolver_calls = 0;
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true, receipt_schema_version: 1 }),
+    resolve_terminal_context: async () => {
+      resolver_calls += 1;
+      return {
+        pos_direct_print_terminal_id: "TERM-CACHED",
+        pos_direct_print_idempotency_key: "idem-cached-1",
+        paired_client_id: "client-cached-1",
+      };
+    },
+  });
+  const prototype = { print_receipt() {} };
+  adapter.installOverride(manager, prototype);
+
+  const summary = {
+    frm: {
+      doc: {
+        doctype: "POS Invoice",
+        name: "POS-INV-CACHE-1",
+        owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
+      },
+    },
+  };
+
+  await prototype.print_receipt.call(summary);
+  await prototype.print_receipt.call({ ...summary });
+
+  // The cache is keyed company|pos_profile: the second call reuses the entry.
+  assert.equal(resolver_calls, 1, "resolver called once thanks to the cache");
+  assert.equal(manager.requests_received.length, 2);
+  assert.equal(manager.requests_received[0].terminal_id, "TERM-CACHED");
+  assert.equal(manager.requests_received[1].terminal_id, "TERM-CACHED");
+});
+
+test("same profile, two invoices: resolver called once, idempotency keys differ", async () => {
+  const { api, manager } = makeFoundation();
+  let resolver_calls = 0;
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true, receipt_schema_version: 1 }),
+    resolve_terminal_context: async () => {
+      resolver_calls += 1;
+      return {
+        pos_direct_print_terminal_id: "TERM-CACHED",
+        // Deliberately stale resolver-supplied key: the adapter must never
+        // cache or trust it, or invoice B would inherit invoice A's key.
+        pos_direct_print_idempotency_key: "stale-invoice-A-key",
+        paired_client_id: "client-cached-1",
+      };
+    },
+  });
+  const prototype = { print_receipt() {} };
+  adapter.installOverride(manager, prototype);
+
+  const summaryA = {
+    frm: {
+      doc: {
+        doctype: "POS Invoice",
+        name: "POS-INV-LEAK-A",
+        owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
+      },
+    },
+  };
+  const summaryB = {
+    ...summaryA,
+    frm: { doc: { ...summaryA.frm.doc, name: "POS-INV-LEAK-B" } },
+  };
+
+  await prototype.print_receipt.call(summaryA);
+  await prototype.print_receipt.call(summaryB);
+
+  assert.equal(resolver_calls, 1, "terminal resolved once for the profile");
+  assert.equal(
+    manager.requests_received.length,
+    2,
+    "two invoices produce two requests"
+  );
+  assert.equal(api.jobs.size, 2, "distinct keys create distinct Jobs");
+  const keys = [...api.jobs.values()].map((job) => job.idempotency_key);
+  assert.equal(
+    new Set(keys).size,
+    2,
+    "two invoices on one terminal never share an idempotency key"
+  );
+  assert.ok(
+    keys.every((k) => k !== "stale-invoice-A-key"),
+    "resolver-supplied key is never trusted"
+  );
+});
+
+test("resolved context preserves terminal transport, driver_key, and paper_width_mm", async () => {
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true, receipt_schema_version: 1 }),
+    resolve_terminal_context: async () => ({
+      pos_direct_print_terminal_id: "TERM-T",
+      pos_direct_print_transport: "USB",
+      pos_direct_print_driver_key: "imin_v1",
+      pos_direct_print_paper_width_mm: "58",
+      paired_client_id: "client-t",
+    }),
+  });
+
+  const summary = {
+    frm: {
+      doc: {
+        doctype: "POS Invoice",
+        name: "POS-INV-TRANSPORT",
+        owner: "op@example.test",
+        pos_profile: "yusuf",
+        company: "PT. JUARA ROTI INDONESIA",
+      },
+    },
+  };
+
+  const ctx = await adapter.resolve_context(summary);
+
+  assert.equal(ctx.pos_direct_print_terminal_id, "TERM-T");
+  assert.equal(ctx.pos_direct_print_transport, "USB");
+  assert.equal(ctx.pos_direct_print_driver_key, "imin_v1");
+  assert.equal(ctx.pos_direct_print_paper_width_mm, "58");
+  assert.ok(
+    ctx.pos_direct_print_idempotency_key.startsWith("pdpr1:"),
+    "key is still derived per invoice"
+  );
+
+  Object.assign(summary, ctx);
+  const request = adapter.buildPrintRequest(summary, [], "POS_AUTO");
+  assert.equal(request.driver_key, "imin_v1");
+  assert.equal(request.options.transport, "USB");
+  assert.equal(request.options.paper_profile, "reference_58mm");
+});
+
+test("resolver failure surfaces canonical error without touching original print", async () => {
+  const { manager } = makeFoundation();
+  let original_calls = 0;
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: async () => {
+      throw makeError("PDP_TERMINAL_NOT_FOUND", {
+        phase: "RESERVATION",
+        metadata: { reason: "no terminal for profile" },
+      });
+    },
+  });
+  const prototype = {
+    print_receipt() {
+      original_calls++;
+      return "original-printed";
+    },
+  };
+  adapter.installOverride(manager, prototype);
+
+  await assert.rejects(
+    () => prototype.print_receipt.call(makeSummary()),
+    (err) => err.code === "PDP_TERMINAL_NOT_FOUND"
+  );
+  assert.equal(
+    original_calls,
+    0,
+    "original path never called on resolver failure"
+  );
+  assert.equal(manager.requests_received.length, 0, "orchestration bypassed");
+});
+
+test("disabled settings bypass resolver entirely (A-AT-06 regression)", async () => {
+  const { manager } = makeFoundation();
+  let original_calls = 0;
+  let resolver_calls = 0;
+  const adapter = new POSIntegrationAdapter({
+    get_settings: () => ({ enabled: false }),
+    resolve_terminal_context: async () => {
+      resolver_calls++;
+      return {
+        pos_direct_print_terminal_id: "TERM-1",
+        pos_direct_print_idempotency_key: "idem-1",
+        paired_client_id: "client-1",
+      };
+    },
+  });
+  const prototype = {
+    print_receipt() {
+      original_calls++;
+      return "original-printed";
+    },
+  };
+  adapter.installOverride(manager, prototype);
+
+  await prototype.print_receipt.call(makeSummary());
+
+  assert.equal(original_calls, 1, "baseline ERPNext print used");
+  assert.equal(resolver_calls, 0, "resolver never called when disabled");
+  assert.equal(
+    manager.requests_received.length,
+    0,
+    "orchestration not invoked"
+  );
+});
+
 test("A-AT-11: safe retry reuses the SAME Job with a new Attempt", async () => {
   const settings = {
     driver_script: { print_behavior: "fail_before_content" },
@@ -408,6 +787,7 @@ test("A-AT-11: safe retry reuses the SAME Job with a new Attempt", async () => {
   const { api, manager } = makeFoundation(settings);
   const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
+    resolve_terminal_context: fakeResolveTerminalContext,
   });
   const prototype = { print_receipt() {} };
   adapter.installOverride(manager, prototype);

@@ -10,6 +10,7 @@
 
 import { makeError } from "./errors.mjs";
 import { assertTransition } from "./print_job.mjs";
+import { canonicalize, hashReceipt } from "../receipt/receipt_builder.mjs";
 
 export class JobCoordinator {
   /**
@@ -59,6 +60,24 @@ export class JobCoordinator {
     return this.api.startAttempt({ job_id, reservation_token, terminal_id });
   }
 
+  async bindReceiptSnapshot({ job_id, reservation_token, receipt }) {
+    return this.api.bindReceiptSnapshot({
+      job_id,
+      reservation_token,
+      receipt_snapshot: canonicalize(receipt),
+      receipt_hash: hashReceipt(receipt),
+    });
+  }
+
+  /**
+   * Server-side safe-retry re-reservation. Mints a fresh reservation token
+   * atomically so the retry cycle gets a valid owner without the client ever
+   * needing the original (projection-hidden) reservation_owner.
+   */
+  async reReserve({ job_id, initiator }) {
+    return this.api.reReserveJob({ job_id, initiator });
+  }
+
   /**
    * Atomic optimistic transition. The client pre-validates the pair against
    * the transition table, then lets the server's guarded UPDATE decide the
@@ -94,6 +113,14 @@ export class JobCoordinator {
       error_code: error ? error.code : null,
       error_detail: error ? error.technical_message : null,
     });
+  }
+
+  fallbackToBrowser({ job_id, approved }) {
+    return this.api.fallbackToBrowser({ job_id, approved });
+  }
+
+  cancelJob({ job_id, reason }) {
+    return this.api.cancelJob({ job_id, reason });
   }
 
   /**

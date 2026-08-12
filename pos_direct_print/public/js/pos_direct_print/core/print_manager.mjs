@@ -4,6 +4,13 @@
  * Depends only on domain contracts: JobCoordinator, capability registry,
  * driver contract, error normalizer. Never on a printer SDK (A-DOD-09/12) and
  * never called from the POS adapter except through requestPrint.
+ *
+ * Frozen driver lifecycle (milestone-b §1.6 / R-GAP-05): preflight
+ * (detect -> initialize -> getStatus) happens while the Job is PREFLIGHT;
+ * PREFLIGHT -> PRINTING happens only after the driver is READY; dispatch runs
+ * while the Job is PRINTING; settlement walks the tail of SETTLE_PATHS from
+ * the live state. B-COMP Option A gates SUCCEEDED on a bounded post-dispatch
+ * READY query (post_status_checked + final_status.ready).
  */
 
 import { makeError } from "./errors.mjs";
@@ -61,6 +68,7 @@ export class PrintManager {
     this.requests_received.push(request);
 
     const state = {
+      current: "CREATED",
       phase: "RESERVATION",
       content_started: false,
       from_state: context.from_state || "CREATED",
@@ -73,9 +81,16 @@ export class PrintManager {
       });
       state.job_id = reservation.job_id;
       state.reservation_token = reservation.reservation_token;
+      state.current = "RESERVED";
 
       const receipt =
         context.receipt || (await this._buildReceipt(request, context));
+
+      await this.coordinator.bindReceiptSnapshot({
+        job_id: reservation.job_id,
+        reservation_token: reservation.reservation_token,
+        receipt,
+      });
 
       const driver = await this._selectDriver(request);
 
@@ -85,10 +100,9 @@ export class PrintManager {
         terminal_id: request.terminal_id,
       });
       state.attempt_id = started.attempt.attempt_id;
-      state.phase = "PRINT";
+      state.current = "PREFLIGHT";
 
-      const result = await this._executePrint(driver, receipt, request, state);
-      return await this._settle(state, result, driver);
+      return await this._attemptCycle(driver, receipt, request, state);
     } catch (raw) {
       return this._failureOutcome(state, raw);
     }
@@ -115,6 +129,7 @@ export class PrintManager {
     }
 
     const state = {
+      current: "FAILED_SAFE",
       phase: "RESERVATION",
       content_started: false,
       job_id,
@@ -122,15 +137,18 @@ export class PrintManager {
     };
 
     try {
-      // Re-reserve the SAME Job (FAILED_SAFE -> RESERVED), then run the
-      // standard attempt cycle with the original receipt snapshot.
-      const re_reserved = await this.coordinator.transition({
+      // Server-side safe-retry re-reservation: FAILED_SAFE -> RESERVED with a
+      // fresh server-minted owner. The original reservation_owner is hidden
+      // from projections (A.31.9 Level 1) and remains unchanged from the first
+      // cycle, so no client-known token could pass a guarded transition — the
+      // dedicated endpoint mints a new reservation cycle instead. The initiator
+      // is audit metadata only and is never used as a token.
+      const re_reserved = await this.coordinator.reReserve({
         job_id,
-        expected_from_state: "FAILED_SAFE",
-        target_state: "RESERVED",
-        reservation_token: initiator,
+        initiator,
       });
-      state.reservation_token = re_reserved.reservation_owner || initiator;
+      state.reservation_token = re_reserved.reservation_token;
+      state.current = "RESERVED";
 
       const receipt = this.fetchReceipt
         ? await this.fetchReceipt(job_id)
@@ -141,6 +159,15 @@ export class PrintManager {
             },
             { invoice_snapshot: snapshot }
           );
+
+      // DECIDED C-5: retry skips the bind when the bound snapshot is reused.
+      if (!this.fetchReceipt) {
+        await this.coordinator.bindReceiptSnapshot({
+          job_id,
+          reservation_token: state.reservation_token,
+          receipt,
+        });
+      }
 
       const driver = await this._selectDriver({
         driver_key: snapshot.driver_key,
@@ -153,10 +180,9 @@ export class PrintManager {
         terminal_id: snapshot.terminal,
       });
       state.attempt_id = started.attempt.attempt_id;
-      state.phase = "PRINT";
+      state.current = "PREFLIGHT";
 
-      const result = await this._executePrint(driver, receipt, {}, state);
-      return await this._settle(state, result, driver);
+      return await this._attemptCycle(driver, receipt, {}, state);
     } catch (raw) {
       return this._failureOutcome(state, raw);
     }
@@ -170,12 +196,7 @@ export class PrintManager {
         metadata: { job_id, status: snapshot.status, reason },
       });
     }
-    return this.coordinator.transition({
-      job_id,
-      expected_from_state: snapshot.status,
-      target_state: "CANCELLED",
-      reservation_token: snapshot.reservation_owner,
-    });
+    return this.coordinator.cancelJob({ job_id, reason });
   }
 
   async fallbackToBrowser(job_id, approved) {
@@ -196,12 +217,7 @@ export class PrintManager {
       });
     }
 
-    return this.coordinator.transition({
-      job_id,
-      expected_from_state: snapshot.status,
-      target_state: "FALLBACK_BROWSER",
-      reservation_token: snapshot.reservation_owner,
-    });
+    return this.coordinator.fallbackToBrowser({ job_id, approved: true });
   }
 
   getJobStatus(job_id) {
@@ -224,8 +240,101 @@ export class PrintManager {
       });
     }
     const record = this.registry.getDriver(driver_key);
-    const driver = this.resolveDriver(record);
-    return driver;
+    return this.resolveDriver(record, request);
+  }
+
+  /**
+   * The single attempt cycle shared by requestPrint and retryJob: everything
+   * from preflight onward routes through here, so the lifecycle and state walk
+   * can never diverge between the two entry points.
+   */
+  async _attemptCycle(driver, receipt, request, state) {
+    try {
+      await this._preflight(driver, state);
+
+      await this._transitionTo(state, "PRINTING");
+      state.phase = "PRINT";
+
+      const result = await this._executePrint(driver, receipt, request, state);
+      return await this._settle(state, result, driver);
+    } catch (raw) {
+      return this._failureOutcome(state, raw);
+    }
+  }
+
+  /**
+   * Frozen driver lifecycle before dispatch: detect -> initialize -> getStatus.
+   * Every failure here is a pre-output failure that keeps content unstarted and
+   * settles FAILED_SAFE (the Job is still PREFLIGHT; PREFLIGHT -> FAILED_SAFE
+   * is the legal path).
+   */
+  async _preflight(driver, state) {
+    state.phase = "PREFLIGHT";
+
+    let detected;
+    try {
+      detected = await driver.detect({ job_id: state.job_id });
+    } catch (raw) {
+      throw normalize(raw, "PREFLIGHT", { content_started: false });
+    }
+    if (!detected || !detected.available) {
+      throw makeError("PDP_BRIDGE_UNAVAILABLE", {
+        phase: "PREFLIGHT",
+        metadata: { reason: detected?.reason || null },
+      });
+    }
+
+    try {
+      const initialized = await driver.initialize({
+        job_id: state.job_id,
+      });
+      if (!initialized || !initialized.initialized) {
+        throw makeError("PDP_PRINTER_NOT_READY", { phase: "PREFLIGHT" });
+      }
+    } catch (raw) {
+      if (raw && raw.code && String(raw.code).startsWith("PDP_")) {
+        throw raw;
+      }
+      throw normalize(raw, "PREFLIGHT", { content_started: false });
+    }
+
+    let status;
+    try {
+      status = await driver.getStatus({ job_id: state.job_id });
+    } catch (raw) {
+      throw normalize(raw, "PREFLIGHT", { content_started: false });
+    }
+    this._statusCodeFor(status);
+  }
+
+  /**
+   * Map a preflight PrinterStatus to the canonical reserved code. A non-READY
+   * status throws so the cycle settles FAILED_SAFE while the Job is PREFLIGHT.
+   * PAPER_OUT and COVER_OPEN get their own codes; anything else is
+   * PDP_PRINTER_NOT_READY (milestone-b §1.6 mapping).
+   */
+  _statusCodeFor(status) {
+    if (!status || status.ready) {
+      return null;
+    }
+    const state = status.state || "UNKNOWN_ERROR";
+    if (state === "PAPER_OUT") {
+      throw makeError("PDP_PRINTER_PAPER_OUT", { phase: "PREFLIGHT" });
+    }
+    if (state === "COVER_OPEN") {
+      throw makeError("PDP_PRINTER_COVER_OPEN", { phase: "PREFLIGHT" });
+    }
+    throw makeError("PDP_PRINTER_NOT_READY", { phase: "PREFLIGHT" });
+  }
+
+  async _transitionTo(state, target_state) {
+    await this.coordinator.transition({
+      job_id: state.job_id,
+      expected_from_state: state.current,
+      target_state,
+      reservation_token: state.reservation_token,
+    });
+    state.current = target_state;
   }
 
   async _executePrint(driver, receipt, request, state) {
@@ -239,14 +348,15 @@ export class PrintManager {
       }
       return result;
     } catch (raw) {
-      // Driver threw: normalize, then wrap in a rejected result so the
-      // settlement path stays single.
-      state.driver_error = normalize(raw, state.phase, {
-        content_started: state.content_started,
-      });
+      // A driver that throws after dispatch is authoritative about content
+      // risk; do not let the manager's pre-throw state flatten it in the audit.
+      const content_started =
+        state.content_started || Boolean(raw?.content_may_have_printed);
+      state.content_started = content_started;
+      state.driver_error = normalize(raw, state.phase, { content_started });
       return {
         accepted: false,
-        content_started: state.content_started,
+        content_started,
         content_completed: false,
         verification_supported: false,
         final_status: null,
@@ -256,7 +366,15 @@ export class PrintManager {
   }
 
   async _settle(state, result, driver) {
-    const settled_status = this._settleStatus(result);
+    let settled_status = this._settleStatus(result);
+
+    // PRINTING -> FAILED_SAFE is forbidden (A.17 / constitution §7): once the
+    // Job has entered PRINTING, a failure cannot be labelled safe even if the
+    // driver reports content_started false, because the manager cannot prove
+    // no content was issued. Escalate to the legal PRINTING -> UNCERTAIN exit.
+    if (settled_status === "FAILED_SAFE" && state.current === "PRINTING") {
+      settled_status = "UNCERTAIN";
+    }
 
     await this.coordinator.completeAttempt({
       attempt_id: state.attempt_id,
@@ -266,19 +384,7 @@ export class PrintManager {
       error: state.driver_error || null,
     });
 
-    // Walk the valid transition path from the post-attempt state (PREFLIGHT)
-    // to the settled state — SUCCEEDED and UNCERTAIN are only reachable
-    // through PRINTING/VERIFYING.
-    let current = "PREFLIGHT";
-    for (const next of SETTLE_PATHS[settled_status]) {
-      await this.coordinator.transition({
-        job_id: state.job_id,
-        expected_from_state: current,
-        target_state: next,
-        reservation_token: state.reservation_token,
-      });
-      current = next;
-    }
+    const current = await this._walkSettlePath(state, settled_status);
 
     return {
       job_id: state.job_id,
@@ -291,16 +397,56 @@ export class PrintManager {
     };
   }
 
+  /**
+   * Walk the tail of the valid path from the live state to the settled state
+   * and update `state.current` on the way. A preflight failure walks
+   * PREFLIGHT -> FAILED_SAFE; a completed dispatch walks PRINTING -> VERIFYING
+   * -> SUCCEEDED (or PRINTING -> UNCERTAIN). Path steps already reached
+   * (PRINTING after dispatch) are skipped; no new transitions are invented.
+   */
+  async _walkSettlePath(state, settled_status) {
+    const path = SETTLE_PATHS[settled_status];
+    const reached = path.indexOf(state.current);
+    let current = reached >= 0 ? path[reached] : state.current;
+    for (let i = reached + 1; i < path.length; i += 1) {
+      await this.coordinator.transition({
+        job_id: state.job_id,
+        expected_from_state: current,
+        target_state: path[i],
+        reservation_token: state.reservation_token,
+      });
+      current = path[i];
+    }
+    state.current = current;
+    return current;
+  }
+
   _settleStatus(result) {
     // Browser handoff (BrowserDriver) is its own settled state — never a
     // physical success, never a plain failure.
     if (result.metadata && result.metadata.handoff) {
       return "FALLBACK_BROWSER";
     }
-    if (result.accepted && result.content_completed) {
+    // B-COMP Option A gate: SUCCEEDED requires full dispatch AND a bounded
+    // post-dispatch READY status query. Dispatch without that approved
+    // evidence settles UNCERTAIN (constitution §7: unknown = may have printed).
+    if (
+      result.accepted &&
+      result.content_completed &&
+      result.metadata?.post_status_checked === true &&
+      result.final_status?.ready === true
+    ) {
       return "SUCCEEDED";
     }
     if (result.content_started && !result.content_completed) {
+      return "UNCERTAIN";
+    }
+    if (result.accepted && result.content_completed) {
+      // Dispatch completed but no approved post-status evidence.
+      return "UNCERTAIN";
+    }
+    if (result.content_started) {
+      // Dispatch began but completion is unproven (accepted false path).
       return "UNCERTAIN";
     }
     return "FAILED_SAFE";
@@ -314,11 +460,20 @@ export class PrintManager {
       content_started: state.content_started,
     });
 
+    // Preflight failures must leave the Job FAILED_SAFE (so safe retry and
+    // browser fallback remain available); once the Job has entered PRINTING
+    // (or content started) the failure is UNCERTAIN through the legal
+    // PRINTING -> UNCERTAIN exit — PRINTING -> FAILED_SAFE is forbidden (A.17).
+    const settled_status =
+      state.current === "PRINTING" || state.content_started
+        ? "UNCERTAIN"
+        : "FAILED_SAFE";
+
     if (state.attempt_id) {
       try {
         await this.coordinator.completeAttempt({
           attempt_id: state.attempt_id,
-          outcome: state.content_started ? "UNCERTAIN" : "FAILED_SAFE",
+          outcome: settled_status,
           content_started: state.content_started,
           error: domainError,
         });
@@ -327,9 +482,20 @@ export class PrintManager {
       }
     }
 
+    // The walk is best-effort here: the primary error always wins.
+    let status = settled_status;
+    if (state.job_id) {
+      try {
+        status = await this._walkSettlePath(state, settled_status);
+      } catch {
+        // The Job state could not be advanced (e.g. a reservation conflict);
+        // report the settled status anyway — the audit record is authoritative.
+      }
+    }
+
     return {
       job_id: state.job_id || null,
-      status: state.content_started ? "UNCERTAIN" : "FAILED_SAFE",
+      status,
       attempt_id: state.attempt_id || null,
       success: false,
       fallback_used: false,

@@ -12,10 +12,15 @@ export const MODULE = "pos_direct_print.core.print_api";
 export const OPERATIONS = Object.freeze({
   GET_SETTINGS: `${MODULE}.get_settings`,
   RESOLVE_TERMINAL: `${MODULE}.resolve_terminal`,
+  RESOLVE_TERMINAL_FOR_PROFILE: `${MODULE}.resolve_terminal_for_profile`,
   RESERVE_PRINT_JOB: `${MODULE}.reserve_print_job`,
+  RE_RESERVE_JOB: `${MODULE}.re_reserve_job`,
   START_ATTEMPT: `${MODULE}.start_attempt`,
+  BIND_RECEIPT_SNAPSHOT: `${MODULE}.bind_receipt_snapshot`,
   TRANSITION_JOB: `${MODULE}.transition_job`,
   COMPLETE_ATTEMPT: `${MODULE}.complete_attempt`,
+  FALLBACK_TO_BROWSER: `${MODULE}.fallback_to_browser`,
+  CANCEL_JOB: `${MODULE}.cancel_job`,
   RELEASE_RESERVATION: `${MODULE}.release_reservation`,
   RETRIEVE_JOB: `${MODULE}.retrieve_job`,
 });
@@ -24,10 +29,15 @@ export const OPERATIONS = Object.freeze({
 const OPERATION_PHASES = Object.freeze({
   [OPERATIONS.GET_SETTINGS]: "RESERVATION",
   [OPERATIONS.RESOLVE_TERMINAL]: "RESERVATION",
+  [OPERATIONS.RESOLVE_TERMINAL_FOR_PROFILE]: "RESERVATION",
   [OPERATIONS.RESERVE_PRINT_JOB]: "RESERVATION",
+  [OPERATIONS.RE_RESERVE_JOB]: "RESERVATION",
   [OPERATIONS.START_ATTEMPT]: "PREFLIGHT",
+  [OPERATIONS.BIND_RECEIPT_SNAPSHOT]: "RECEIPT",
   [OPERATIONS.TRANSITION_JOB]: "PRINT",
   [OPERATIONS.COMPLETE_ATTEMPT]: "VERIFY",
+  [OPERATIONS.FALLBACK_TO_BROWSER]: "FALLBACK",
+  [OPERATIONS.CANCEL_JOB]: "RESERVATION",
   [OPERATIONS.RELEASE_RESERVATION]: "RESERVATION",
   [OPERATIONS.RETRIEVE_JOB]: "RESERVATION",
 });
@@ -50,8 +60,19 @@ export class PrintApi {
     return this._invoke(OPERATIONS.RESOLVE_TERMINAL, { terminal_id });
   }
 
+  resolveTerminalForProfile(company, pos_profile) {
+    return this._invoke(OPERATIONS.RESOLVE_TERMINAL_FOR_PROFILE, {
+      company,
+      pos_profile,
+    });
+  }
+
   reservePrintJob(payload) {
     return this._invoke(OPERATIONS.RESERVE_PRINT_JOB, payload);
+  }
+
+  reReserveJob({ job_id, initiator }) {
+    return this._invoke(OPERATIONS.RE_RESERVE_JOB, { job_id, initiator });
   }
 
   startAttempt({ job_id, reservation_token, terminal_id }) {
@@ -59,6 +80,20 @@ export class PrintApi {
       job_id,
       reservation_token,
       terminal_id,
+    });
+  }
+
+  bindReceiptSnapshot({
+    job_id,
+    reservation_token,
+    receipt_snapshot,
+    receipt_hash,
+  }) {
+    return this._invoke(OPERATIONS.BIND_RECEIPT_SNAPSHOT, {
+      job_id,
+      reservation_token,
+      receipt_snapshot,
+      receipt_hash,
     });
   }
 
@@ -78,6 +113,17 @@ export class PrintApi {
 
   completeAttempt(payload) {
     return this._invoke(OPERATIONS.COMPLETE_ATTEMPT, payload);
+  }
+
+  fallbackToBrowser({ job_id, approved }) {
+    return this._invoke(OPERATIONS.FALLBACK_TO_BROWSER, {
+      job_id,
+      approved: approved ? 1 : 0,
+    });
+  }
+
+  cancelJob({ job_id, reason }) {
+    return this._invoke(OPERATIONS.CANCEL_JOB, { job_id, reason });
   }
 
   releaseReservation({ job_id, reservation_token, expected_from_state }) {

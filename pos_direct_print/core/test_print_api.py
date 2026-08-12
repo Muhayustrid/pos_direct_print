@@ -1,22 +1,43 @@
+import json
 import uuid
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
 from pos_direct_print.core.print_api import (
+	bind_receipt_snapshot,
+	cancel_job,
 	complete_attempt,
+	disable_terminals,
+	fallback_to_browser,
 	get_settings,
+	re_reserve_job,
 	release_reservation,
 	reserve_print_job,
 	resolve_terminal,
+	resolve_terminal_for_profile,
 	retrieve_job,
 	start_attempt,
 	transition_job,
 )
+from pos_direct_print.core.receipt_hash import hash_receipt
 
 COMPANY = "PT. JUARA ROTI INDONESIA"
 OUTLET_A = "yusuf"
 OUTLET_B = "POS Training"
+
+
+def _receipt():
+	return {
+		"schema_version": 1,
+		"reference_doctype": "POS Invoice",
+		"reference_name": "POS-INV-BIND-1",
+		"locale": "id-ID",
+		"currency": "IDR",
+		"paper_profile": "58mm",
+		"blocks": [{"type": "TEXT", "text": "TOTAL 1000"}],
+		"metadata": {},
+	}
 
 
 class TestPrintApiTransport(IntegrationTestCase):
@@ -37,6 +58,19 @@ class TestPrintApiTransport(IntegrationTestCase):
 			settings = get_settings()
 		self.assertIn("operating_mode", settings)
 		self.assertNotIn("job_retention_days", settings)
+
+	def test_system_manager_can_bulk_disable_terminals(self):
+		with _user("Administrator"):
+			result = disable_terminals([self.terminal, self.terminal_b])
+		self.assertEqual(result, {"disabled": 2})
+		self.assertEqual(frappe.db.get_value("POS Print Terminal", self.terminal, "enabled"), 0)
+		self.assertEqual(frappe.db.get_value("POS Print Terminal", self.terminal_b, "enabled"), 0)
+
+	def test_operator_cannot_bulk_disable_terminals(self):
+		with _user(self.operator):
+			with self.assertRaises(frappe.PermissionError):
+				disable_terminals([self.terminal])
+		self.assertEqual(frappe.db.get_value("POS Print Terminal", self.terminal, "enabled"), 1)
 
 	def test_resolve_terminal_returns_runtime_projection(self):
 		with _user("Administrator"):
@@ -108,6 +142,13 @@ class TestPrintApiTransport(IntegrationTestCase):
 				resolve_terminal(self.terminal_b)
 		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
 
+	def test_operator_outside_applicable_terminal_rejected(self):
+		other = _user_with_role("api.other@example.test", "POS Print Operator")
+		with _user(other):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal(self.terminal)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
 	def test_attempt_lifecycle_through_transport(self):
 		with _user(self.operator):
 			reservation = reserve_print_job(
@@ -136,6 +177,94 @@ class TestPrintApiTransport(IntegrationTestCase):
 
 			released = retrieve_job(reservation["job_id"])
 			self.assertEqual(released["status"], "PREFLIGHT")
+
+	def test_complete_attempt_derives_retry_class_server_side(self):
+		with _user(self.operator):
+			reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			started = start_attempt(
+				job_id=reservation["job_id"], reservation_token=reservation["reservation_token"]
+			)
+			complete_attempt(
+				attempt_id=started["attempt"]["attempt_id"],
+				outcome="FAILED_SAFE",
+				error_code="PDP_BRIDGE_UNAVAILABLE",
+			)
+		self.assertEqual(
+			frappe.db.get_value("POS Print Attempt", started["attempt"]["attempt_id"], "retry_class"),
+			"AUTO_SAFE",
+		)
+
+	def test_complete_attempt_content_risk_overrides_error_category(self):
+		with _user(self.operator):
+			reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			started = start_attempt(
+				job_id=reservation["job_id"], reservation_token=reservation["reservation_token"]
+			)
+			complete_attempt(
+				attempt_id=started["attempt"]["attempt_id"],
+				outcome="UNCERTAIN",
+				content_started=1,
+				error_code="PDP_PRINTER_NOT_READY",
+			)
+		self.assertEqual(
+			frappe.db.get_value("POS Print Attempt", started["attempt"]["attempt_id"], "retry_class"),
+			"REPRINT_ONLY",
+		)
+
+	def test_server_lifecycle_actions_do_not_require_exposed_owner(self):
+		with _user(self.operator):
+			fallback_reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			transition_job(
+				job_id=fallback_reservation["job_id"],
+				expected_from_state="RESERVED",
+				target_state="FAILED_SAFE",
+				reservation_token=fallback_reservation["reservation_token"],
+			)
+			fallback = fallback_to_browser(fallback_reservation["job_id"], approved=1)
+			self.assertEqual(fallback["status"], "FALLBACK_BROWSER")
+
+			cancel_reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			cancelled = cancel_job(cancel_reservation["job_id"], reason="operator cancel")
+			self.assertEqual(cancelled["status"], "CANCELLED")
+
+	def test_fallback_requires_approval_and_rejects_content_risk(self):
+		with _user(self.operator):
+			reservation = reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
+			)
+			with self.assertRaises(frappe.PermissionError):
+				fallback_to_browser(reservation["job_id"], approved=0)
+			frappe.db.set_value("POS Print Job", reservation["job_id"], "content_may_have_printed", 1)
+			with self.assertRaises(frappe.ValidationError):
+				fallback_to_browser(reservation["job_id"], approved=1)
 
 	def test_transition_job_rejects_invalid_transition(self):
 		with _user(self.operator):
@@ -210,6 +339,335 @@ class TestPrintApiTransport(IntegrationTestCase):
 				retrieve_job(reservation["job_id"])
 
 
+class TestBindReceiptSnapshot(IntegrationTestCase):
+	def setUp(self):
+		self.operator = _user_with_role("bind.op@example.test", "POS Print Operator")
+		_pos_profile_grant_user(OUTLET_A, self.operator)
+		self.terminal = _terminal(OUTLET_A)
+		self.snapshot = _receipt()
+
+	def _reserve(self):
+		with _user(self.operator):
+			return reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"bind-idem-{uuid.uuid4().hex[:8]}",
+			)
+
+	def _bind_kwargs(self, snapshot=None):
+		snapshot = snapshot or self.snapshot
+		return {
+			"job_id": self.reservation["job_id"],
+			"reservation_token": self.reservation["reservation_token"],
+			"receipt_snapshot": json.dumps(snapshot),
+			"receipt_hash": hash_receipt(snapshot),
+		}
+
+	def test_bind_persists_snapshot_hash_and_schema_version(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			projection = bind_receipt_snapshot(**self._bind_kwargs())
+		self.assertEqual(projection["status"], "RESERVED")
+		stored = frappe.get_doc("POS Print Job", self.reservation["job_id"])
+		self.assertEqual(stored.receipt_snapshot, json.dumps(self.snapshot))
+		self.assertEqual(stored.receipt_hash, hash_receipt(self.snapshot))
+		self.assertEqual(stored.receipt_schema_version, 1)
+
+	def test_second_identical_bind_is_idempotent(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			bind_receipt_snapshot(**self._bind_kwargs())
+			projection = bind_receipt_snapshot(**self._bind_kwargs())
+		self.assertEqual(projection["status"], "RESERVED")
+
+	def test_different_hash_while_bound_raises_conflict(self):
+		self.reservation = self._reserve()
+		other = {**self.snapshot, "reference_name": "POS-INV-BIND-2"}
+		with _user(self.operator):
+			bind_receipt_snapshot(**self._bind_kwargs())
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**self._bind_kwargs(other))
+		self.assertIn("PDP_JOB_CONFLICT", str(ctx.exception))
+
+	def test_wrong_or_empty_token_rejected(self):
+		self.reservation = self._reserve()
+		kwargs = self._bind_kwargs()
+		with _user(self.operator):
+			for token in ("wrong", ""):
+				with self.subTest(token=token):
+					with self.assertRaises(frappe.ValidationError):
+						bind_receipt_snapshot(**{**kwargs, "reservation_token": token})
+
+	def test_bind_after_start_attempt_rejected(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			start_attempt(
+				job_id=self.reservation["job_id"],
+				reservation_token=self.reservation["reservation_token"],
+			)
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**self._bind_kwargs())
+		self.assertIn("PDP_JOB_CONFLICT", str(ctx.exception))
+
+	def test_hash_mismatch_with_client_value_raises_validation_error(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**{**self._bind_kwargs(), "receipt_hash": "pdpr1:0000000000000000"})
+		self.assertIn("PDP_RECEIPT_INVALID", str(ctx.exception))
+
+	def test_malformed_json_raises_validation_error(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**{**self._bind_kwargs(), "receipt_snapshot": "{not json"})
+		self.assertIn("PDP_RECEIPT_INVALID", str(ctx.exception))
+
+	def test_projections_never_contain_snapshot_or_hash(self):
+		self.reservation = self._reserve()
+		with _user(self.operator):
+			bind_receipt_snapshot(**self._bind_kwargs())
+			retrieved = retrieve_job(self.reservation["job_id"])
+			transitioned = transition_job(
+				job_id=self.reservation["job_id"],
+				expected_from_state="RESERVED",
+				target_state="CANCELLED",
+				reservation_token=self.reservation["reservation_token"],
+			)
+		for projection in (retrieved, transitioned):
+			self.assertNotIn("receipt_snapshot", projection)
+			self.assertNotIn("receipt_hash", projection)
+
+	def test_lone_surrogate_snapshot_raises_receipt_invalid(self):
+		"""Fix round 1: canonicalize escapes a lone surrogate (json.dumps
+		ensure_ascii=False succeeds), so the UnicodeEncodeError must come from
+		hash_receipt's utf-16-le encode and be wrapped into PDP_RECEIPT_INVALID.
+		The hash value is a placeholder: the server must reject the snapshot
+		before it can compare hashes."""
+		self.reservation = self._reserve()
+		snapshot = {**self.snapshot, "reference_name": "POS-INV-" + chr(0xD800)}
+		kwargs = {
+			"job_id": self.reservation["job_id"],
+			"reservation_token": self.reservation["reservation_token"],
+			"receipt_snapshot": json.dumps(snapshot),
+			"receipt_hash": "pdpr1:0000000000000000",
+		}
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				bind_receipt_snapshot(**kwargs)
+		self.assertIn("PDP_RECEIPT_INVALID", str(ctx.exception))
+
+
+class TestReReserveJob(IntegrationTestCase):
+	"""Fix round 1 — server-side safe-retry re-reservation. The FAILED_SAFE Job
+	keeps its original reservation_owner, which is hidden from projections, so a
+	retry can never present it. re_reserve_job mints a NEW server-side owner for
+	the retry cycle; the initiator is audit metadata and never a token."""
+
+	def setUp(self):
+		self.operator = _user_with_role("rereserve.op@example.test", "POS Print Operator")
+		_pos_profile_grant_user(OUTLET_A, self.operator)
+		self.terminal = _terminal(OUTLET_A)
+
+	def _reserve(self):
+		with _user(self.operator):
+			return reserve_print_job(
+				reference_doctype="Company",
+				reference_name=COMPANY,
+				terminal_id=self.terminal,
+				requested_by=self.operator,
+				idempotency_key=f"rereserve-idem-{uuid.uuid4().hex[:8]}",
+			)
+
+	def _drive_to_failed_safe(self, reservation):
+		with _user(self.operator):
+			started = start_attempt(
+				job_id=reservation["job_id"],
+				reservation_token=reservation["reservation_token"],
+			)
+			complete_attempt(
+				attempt_id=started["attempt"]["attempt_id"],
+				outcome="FAILED_SAFE",
+				error_code="PDP_BRIDGE_UNAVAILABLE",
+			)
+			transition_job(
+				job_id=reservation["job_id"],
+				expected_from_state="PREFLIGHT",
+				target_state="FAILED_SAFE",
+				reservation_token=reservation["reservation_token"],
+			)
+		frappe.db.commit()
+
+	def test_rereserve_mints_fresh_owner_distinct_from_initiator(self):
+		reservation = self._reserve()
+		self._drive_to_failed_safe(reservation)
+
+		with _user(self.operator):
+			payload = re_reserve_job(reservation["job_id"], initiator=self.operator)
+
+		self.assertEqual(payload["job_id"], reservation["job_id"])
+		self.assertEqual(payload["status"], "RESERVED")
+		self.assertNotEqual(payload["reservation_token"], reservation["reservation_token"])
+		self.assertNotEqual(payload["reservation_token"], self.operator)
+		self.assertTrue(payload["reservation_token"].startswith("RETRY-"))
+
+		job = frappe.get_doc("POS Print Job", reservation["job_id"])
+		self.assertEqual(job.reservation_owner, payload["reservation_token"])
+		self.assertEqual(job.safe_retry_count, 1)
+
+	def test_original_owner_no_longer_matches_after_rereserve(self):
+		reservation = self._reserve()
+		self._drive_to_failed_safe(reservation)
+		old_token = reservation["reservation_token"]
+
+		with _user(self.operator):
+			payload = re_reserve_job(reservation["job_id"], initiator=self.operator)
+
+		# The old token must fail every guarded mutation now.
+		with self.assertRaises(frappe.ValidationError):
+			start_attempt(
+				job_id=reservation["job_id"],
+				reservation_token=old_token,
+			)
+		with _user(self.operator):
+			# The fresh token starts the retry attempt instead.
+			started = start_attempt(
+				job_id=reservation["job_id"],
+				reservation_token=payload["reservation_token"],
+			)
+		self.assertEqual(started["job"]["status"], "PREFLIGHT")
+
+	def test_rereserve_denied_when_not_failed_safe(self):
+		reservation = self._reserve()
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			with _user(self.operator):
+				re_reserve_job(reservation["job_id"], initiator=self.operator)
+		self.assertIn("PDP_JOB_INVALID_TRANSITION", str(ctx.exception))
+
+	def test_rereserve_respects_retry_limit(self):
+		reservation = self._reserve()
+		self._drive_to_failed_safe(reservation)
+		max_retries = frappe.get_single("POS Print Settings").max_safe_auto_retries or 0
+		frappe.db.set_value("POS Print Job", reservation["job_id"], "safe_retry_count", max_retries)
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			with _user(self.operator):
+				re_reserve_job(reservation["job_id"], initiator=self.operator)
+		self.assertIn("PDP_JOB_CONFLICT", str(ctx.exception))
+
+	def test_rereserve_out_of_scope_denied(self):
+		reservation = self._reserve()
+		self._drive_to_failed_safe(reservation)
+		other = _user_with_role("rereserve.op2@example.test", "POS Print Operator")
+		with self.assertRaises(frappe.PermissionError):
+			with _user(other):
+				re_reserve_job(reservation["job_id"], initiator=other)
+
+
+class TestResolveTerminalForProfile(IntegrationTestCase):
+	"""B4-01 — row-scoped terminal lookup for the POS context (C-3 resolved:
+	transport travels in this lookup's own projection, not the frozen one)."""
+
+	def setUp(self):
+		self.operator = _user_with_role("profile.op@example.test", "POS Print Operator")
+		self.manager_a = _user_with_role("profile.mgr.a@example.test", "POS Print Manager")
+		self.manager_none = _user_with_role("profile.mgr.none@example.test", "POS Print Manager")
+		self.no_role = _user_with_role("profile.norole@example.test", "Sales User")
+		# Dedicated profile per test: the site's shared OUTLET_A carries legacy
+		# UNVERIFIED terminals that would win the creation-asc lookup.
+		self.profile = _pos_profile("PDP Resolve Profile", self.operator)
+		_user_permission(self.manager_a, "POS Profile", self.profile)
+
+	def test_operator_with_applicable_profile_gets_transport_projection(self):
+		terminal = _terminal(
+			self.profile,
+			qualification_status="QUALIFIED",
+			transport="USB",
+			paper_width_mm="58",
+			driver_key="imin_v1",
+		)
+		with _user(self.operator):
+			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertEqual(projection["terminal_id"], terminal)
+		self.assertEqual(projection["transport"], "USB")
+		self.assertEqual(projection["driver_key"], "imin_v1")
+		self.assertEqual(projection["paper_width_mm"], "58")
+		self.assertEqual(projection["qualification_status"], "QUALIFIED")
+		# Device-admin fields never cross this RPC boundary either.
+		self.assertNotIn("device_serial", projection)
+		self.assertNotIn("pairing_status", projection)
+
+	def test_operator_outside_applicable_profile_rejected(self):
+		other = _user_with_role("profile.other@example.test", "POS Print Operator")
+		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		with _user(other):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
+	def test_manager_without_pos_profile_scope_rejected(self):
+		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		with _user(self.manager_none):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
+	def test_manager_with_scope_gets_lookup(self):
+		terminal = _terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		with _user(self.manager_a):
+			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertEqual(projection["terminal_id"], terminal)
+
+	def test_user_with_no_print_role_rejected(self):
+		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		with _user(self.no_role):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
+	def test_no_enabled_terminal_raises_not_found(self):
+		_terminal(self.profile, qualification_status="QUALIFIED", enabled=0)
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_TERMINAL_NOT_FOUND", str(ctx.exception))
+
+	def test_enabled_unverified_terminal_raises_not_qualified(self):
+		_terminal(self.profile, qualification_status="UNVERIFIED", enabled=1)
+		with _user(self.operator):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertIn("PDP_TERMINAL_NOT_QUALIFIED", str(ctx.exception))
+
+	def test_qualified_terminal_wins_over_older_unverified_terminal(self):
+		_terminal(self.profile, qualification_status="UNVERIFIED", transport="UNKNOWN")
+		qualified = _terminal(self.profile, qualification_status="QUALIFIED", transport="SPI")
+		with _user(self.operator):
+			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertEqual(projection["terminal_id"], qualified)
+
+	def test_two_enabled_terminals_returns_oldest(self):
+		older = _terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
+		_terminal(self.profile, qualification_status="QUALIFIED", transport="SPI")
+		frappe.db.set_value("POS Print Terminal", older, "creation", "2020-01-01 08:00:00")
+		with _user(self.operator):
+			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+		self.assertEqual(projection["terminal_id"], older)
+
+	def test_out_of_company_scope_rejected(self):
+		# Company User Permission narrows scope to COMPANY, so a lookup for a
+		# different company is denied even though a terminal exists there.
+		other_company = "_Test Company"
+		_terminal(self.profile, qualification_status="QUALIFIED", company=other_company)
+		_user_permission(self.operator, "Company", COMPANY)
+		with _user(self.operator):
+			with self.assertRaises(frappe.PermissionError) as ctx:
+				resolve_terminal_for_profile(other_company, self.profile)
+		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
+
+
 class _user:
 	def __init__(self, user):
 		self.user = user
@@ -225,20 +683,27 @@ class _user:
 
 def _user_with_role(email, role):
 	if frappe.db.exists("User", email):
-		frappe.delete_doc("User", email, force=True)
-	user = frappe.get_doc(
-		{
-			"doctype": "User",
-			"email": email,
-			"first_name": email.split("@")[0],
-			"send_welcome_email": 0,
-		}
-	).insert(ignore_permissions=True)
-	user.add_roles(role)
+		user = frappe.get_doc("User", email)
+	else:
+		user = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": email.split("@")[0],
+				"send_welcome_email": 0,
+			}
+		).insert(ignore_permissions=True)
+	if role not in {row.role for row in user.roles}:
+		user.add_roles(role)
 	return user.name
 
 
 def _user_permission(user, allow, for_value):
+	if frappe.db.exists(
+		"User Permission",
+		{"user": user, "allow": allow, "for_value": for_value},
+	):
+		return
 	frappe.get_doc(
 		{
 			"doctype": "User Permission",
@@ -256,18 +721,28 @@ def _pos_profile_grant_user(pos_profile, user):
 		profile.save(ignore_permissions=True)
 
 
-def _terminal(pos_profile):
+def _pos_profile(name, user=None, *, company=COMPANY, disabled=0):
+	"""Fresh POS Profile copied from the site template, so lookups scoped to it
+	never collide with legacy terminals on the shared OUTLET_A profile."""
+	source = frappe.get_doc("POS Profile", OUTLET_A)
+	profile = frappe.copy_doc(source)
+	profile.name = f"{name}-{uuid.uuid4().hex[:8]}"
+	profile.company = company
+	profile.disabled = disabled
+	profile.set("applicable_for_users", [])
+	if user:
+		profile.append("applicable_for_users", {"user": user, "default": 0})
+	return profile.insert(ignore_permissions=True).name
+
+
+def _terminal(pos_profile, **overrides):
 	suffix = uuid.uuid4().hex[:8]
-	return (
-		frappe.get_doc(
-			{
-				"doctype": "POS Print Terminal",
-				"terminal_id": f"TERM-{suffix}",
-				"terminal_label": f"Terminal {suffix}",
-				"company": COMPANY,
-				"pos_profile": pos_profile,
-			}
-		)
-		.insert(ignore_permissions=True)
-		.name
-	)
+	fields = {
+		"doctype": "POS Print Terminal",
+		"terminal_id": f"TERM-{suffix}",
+		"terminal_label": f"Terminal {suffix}",
+		"company": COMPANY,
+		"pos_profile": pos_profile,
+	}
+	fields.update(overrides)
+	return frappe.get_doc(fields).insert(ignore_permissions=True).name
