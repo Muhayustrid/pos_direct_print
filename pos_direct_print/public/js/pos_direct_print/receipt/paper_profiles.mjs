@@ -1,10 +1,16 @@
+// Physical values are calibration knobs, not derived constants. `text_size` is
+// the iMin font pixel height: 24 pairs with 32 logical columns across 384 dots
+// (12 dots per glyph). `final_feed` is a dot-row height passed to
+// printAndFeedPaper, not a line count — the reference demo feeds 50-100 dots to
+// clear the tear bar, so 4 was far too small to advance the paper.
 const DEFAULTS = Object.freeze({
   key: "reference_58mm",
   width_mm: 58,
   logical_width: 32,
   page_format: 1,
   text_width_dots: 384,
-  final_feed: 4,
+  text_size: 24,
+  final_feed: 100,
 });
 
 export function makePaperProfile({
@@ -13,6 +19,7 @@ export function makePaperProfile({
   logical_width = DEFAULTS.logical_width,
   page_format = DEFAULTS.page_format,
   text_width_dots = DEFAULTS.text_width_dots,
+  text_size = DEFAULTS.text_size,
   final_feed = DEFAULTS.final_feed,
 } = {}) {
   return Object.freeze({
@@ -21,6 +28,7 @@ export function makePaperProfile({
     logical_width,
     page_format,
     text_width_dots,
+    text_size,
     final_feed,
   });
 }

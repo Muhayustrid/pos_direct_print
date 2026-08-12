@@ -33,7 +33,8 @@ test("paper profiles are frozen and expose the reference defaults", () => {
     logical_width: 32,
     page_format: 1,
     text_width_dots: 384,
-    final_feed: 4,
+    text_size: 24,
+    final_feed: 100,
   });
   assert.equal(Object.isFrozen(profile), true);
   assert.equal(Object.isFrozen(REFERENCE_PROFILE), true);

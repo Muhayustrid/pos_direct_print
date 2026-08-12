@@ -85,6 +85,17 @@ function makeAdapter(script = {}) {
   return { adapter, runtime, instances };
 }
 
+// Production defaults wait on real hardware (cold-start READY polling, queue
+// drain before the post-dispatch status sample). Tests assert command order,
+// not wall-clock, so every driver here runs with the waits collapsed.
+function makeDriver(options = {}) {
+  return new IminV1Driver({
+    ready_timeout_ms: 0,
+    post_print_settle_ms: 0,
+    ...options,
+  });
+}
+
 function receipt(blocks = [], paper_profile = "test") {
   return {
     schema_version: 1,
@@ -127,7 +138,7 @@ test("mapStatus maps provisional raw values and keeps raw code in metadata", () 
 
 test("initialize succeeds only after READY status", async () => {
   const { adapter } = makeAdapter();
-  const driver = new IminV1Driver({
+  const driver = makeDriver({
     sdk_adapter: adapter,
     paper_profile: TEST_PROFILE,
   });
@@ -142,7 +153,7 @@ test("initialize succeeds only after READY status", async () => {
 
 test("initialize failure is normalized and dispatches no content", async () => {
   const { adapter, instances } = makeAdapter({ throw_on: "initPrinter" });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
 
   await assert.rejects(driver.initialize(), (error) => {
     assert.equal(error.code, "PDP_PRINTER_NOT_READY");
@@ -153,7 +164,7 @@ test("initialize failure is normalized and dispatches no content", async () => {
 
 test("print dispatches setup, style-before-text pairs, one newline, and final feed", async () => {
   const { adapter, instances } = makeAdapter();
-  const driver = new IminV1Driver({
+  const driver = makeDriver({
     sdk_adapter: adapter,
     paper_profile: TEST_PROFILE,
   });
@@ -184,7 +195,7 @@ test("print dispatches setup, style-before-text pairs, one newline, and final fe
     ["setPageFormat", 1],
     ["setTextWidth", 384],
     ["setAlignment", 0],
-    ["setTextSize", 1],
+    ["setTextSize", 24],
     ["setTextStyle", 0],
   ];
   const expectedContent = [
@@ -221,7 +232,7 @@ test("print dispatches setup, style-before-text pairs, one newline, and final fe
 
 test("paper out before dispatch throws without content risk", async () => {
   const { adapter, instances } = makeAdapter({ status: 7 });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
   await driver.initialize().catch(() => {});
 
   await assert.rejects(
@@ -237,7 +248,7 @@ test("paper out before dispatch throws without content risk", async () => {
 
 test("mid-dispatch failure carries content risk and no SDK object", async () => {
   const { adapter, instances } = makeAdapter({ throw_on_print_text: 2 });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
   await driver.initialize();
 
   await assert.rejects(
@@ -260,7 +271,7 @@ test("mid-dispatch failure carries content risk and no SDK object", async () => 
 
 test("error cause chain carries no SDK object or raw text", async () => {
   const { adapter, instances } = makeAdapter({ throw_on: "printText" });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
   await driver.initialize();
 
   await assert.rejects(
@@ -279,7 +290,7 @@ test("error cause chain carries no SDK object or raw text", async () => {
 
 test("mid-dispatch adapter error keeps content_started risk on the error", async () => {
   const { adapter, instances } = makeAdapter({ throw_on: "printText" });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
   await driver.initialize();
 
   // The adapter emits a PRINT-phase error (PRINTER category); once a line was
@@ -298,7 +309,7 @@ test("mid-dispatch adapter error keeps content_started risk on the error", async
 test("post-status not READY returns accepted content-complete result with evidence", async () => {
   // statuses consumed in order: initialize (READY), print preflight (READY), post (7)
   const { adapter } = makeAdapter({ statuses: [0, 0, 7] });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
   await driver.initialize();
 
   const result = await driver.print(
@@ -312,9 +323,72 @@ test("post-status not READY returns accepted content-complete result with eviden
   assert.equal(result.final_status.metadata.raw_code, 7);
 });
 
+test("initialize polls past a cold-start DISCONNECTED status until READY", async () => {
+  // -1 twice (service still binding the SPI head), then READY.
+  const { adapter, instances } = makeAdapter({ statuses: [-1, -1, 0] });
+  const driver = makeDriver({
+    sdk_adapter: adapter,
+    ready_timeout_ms: 2000,
+    ready_poll_interval_ms: 0,
+    reinit_after_polls: 2,
+  });
+
+  const result = await driver.initialize();
+  assert.equal(result.initialized, true);
+
+  const methods = instances[0].calls.map((call) => call.method);
+  // Re-init fires on the 2nd not-ready poll (reinit_after_polls: 2).
+  assert.deepEqual(methods, [
+    "initPrinter",
+    "getPrinterStatus",
+    "getPrinterStatus",
+    "initPrinter",
+    "getPrinterStatus",
+  ]);
+});
+
+test("initialize stops polling on a physical fault instead of burning the budget", async () => {
+  const { adapter, instances } = makeAdapter({ status: 7 }); // PAPER_OUT
+  const driver = makeDriver({
+    sdk_adapter: adapter,
+    ready_timeout_ms: 2000,
+    ready_poll_interval_ms: 0,
+  });
+
+  await assert.rejects(driver.initialize(), (error) => {
+    assert.equal(error.code, "PDP_PRINTER_NOT_READY");
+    assert.equal(error.content_may_have_printed, false);
+    return true;
+  });
+  // One status sample only: PAPER_OUT will not clear by polling.
+  assert.equal(
+    instances[0].calls.filter((call) => call.method === "getPrinterStatus")
+      .length,
+    1
+  );
+});
+
+test("print waits for the queue to drain before sampling post-dispatch status", async () => {
+  const { adapter } = makeAdapter();
+  const driver = makeDriver({
+    sdk_adapter: adapter,
+    paper_profile: TEST_PROFILE,
+    post_print_settle_ms: 40,
+  });
+  await driver.initialize();
+
+  const started = Date.now();
+  const result = await driver.print(receipt([], TEST_PROFILE));
+  assert.ok(
+    Date.now() - started >= 35,
+    "post-dispatch status sample must follow the settle wait"
+  );
+  assert.equal(result.metadata.post_status_checked, true);
+});
+
 test("cut returns controlled unsupported result", () => {
   const { adapter } = makeAdapter();
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
   const result = driver.cut();
   assert.equal(result.accepted, false);
   assert.equal(result.metadata.error_code, "PDP_DRIVER_CAPABILITY_UNSUPPORTED");
@@ -322,7 +396,7 @@ test("cut returns controlled unsupported result", () => {
 
 test("dispose releases adapter and allows detect again", async () => {
   const { adapter } = makeAdapter();
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
   await driver.initialize();
   assert.deepEqual(driver.dispose(), { disposed: true });
   assert.equal((await driver.detect()).available, true);
@@ -330,7 +404,7 @@ test("dispose releases adapter and allows detect again", async () => {
 
 test("driver boundaries do not return the SDK instance", async () => {
   const { adapter, instances } = makeAdapter();
-  const driver = new IminV1Driver({
+  const driver = makeDriver({
     sdk_adapter: adapter,
     paper_profile: TEST_PROFILE,
   });
@@ -351,7 +425,7 @@ test("detect bridge failure returns normalized error without SDK object", async 
   const adapter = new IminSdkAdapter({
     runtime: { WebSocket: class {} }, // no IminPrinter -> bridge unavailable
   });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
 
   const result = await driver.detect();
   assert.equal(result.available, false);
@@ -369,7 +443,7 @@ test("B5: bridge unavailable maps to PDP_BRIDGE_UNAVAILABLE without content risk
     runtime: { WebSocket: undefined, IminPrinter: undefined },
     timeout_ms: 5000,
   });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
 
   const result = await driver.detect();
   assert.equal(result.available, false);
@@ -382,7 +456,7 @@ test("B5: bridge unavailable maps to PDP_BRIDGE_UNAVAILABLE without content risk
 
 test("B5: initialization failure maps to PDP_PRINTER_NOT_READY without dispatch", async () => {
   const { adapter, instances } = makeAdapter({ throw_on: "initPrinter" });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
 
   await assert.rejects(driver.initialize(), (error) => {
     assert.equal(error.code, "PDP_PRINTER_NOT_READY");
@@ -396,7 +470,7 @@ test("B5: initialization failure maps to PDP_PRINTER_NOT_READY without dispatch"
 test("B5: not-ready raw statuses map to PDP_PRINTER_NOT_READY before dispatch", async () => {
   for (const raw of [-1, 1, 3, 8, 99]) {
     const { adapter, instances } = makeAdapter({ status: raw });
-    const driver = new IminV1Driver({ sdk_adapter: adapter });
+    const driver = makeDriver({ sdk_adapter: adapter });
     await driver.initialize().catch(() => {});
 
     await assert.rejects(
@@ -418,7 +492,7 @@ test("B5: not-ready raw statuses map to PDP_PRINTER_NOT_READY before dispatch", 
 
 test("B5: toUserError exposes only message keys, code, and actions", async () => {
   const { adapter } = makeAdapter({ status: 7 });
-  const driver = new IminV1Driver({ sdk_adapter: adapter });
+  const driver = makeDriver({ sdk_adapter: adapter });
   await driver.initialize().catch(() => {});
 
   await assert.rejects(

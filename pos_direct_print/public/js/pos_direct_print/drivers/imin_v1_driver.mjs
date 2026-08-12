@@ -24,6 +24,10 @@ import { renderReceiptLines } from "../receipt/receipt_lines.mjs";
 
 export const IMIN_V1_DRIVER_KEY = "imin_v1";
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const RAW_STATUSES = Object.freeze({
   0: { state: "READY", ready: true, blocking: false },
   7: { state: "PAPER_OUT", ready: false, blocking: true },
@@ -58,6 +62,10 @@ export class IminV1Driver extends BaseDriver {
    * @param {string} [options.address] default "127.0.0.1"
    * @param {number} [options.timeout_ms] default 5000
    * @param {number} [options.post_connect_delay_ms] default 0 — calibration knob; nonzero only when B1-05 records a required delay
+   * @param {number} [options.ready_timeout_ms] default 6000 — cold-start budget for the printer to report READY
+   * @param {number} [options.ready_poll_interval_ms] default 300 — gap between READY polls
+   * @param {number} [options.reinit_after_polls] default 4 — re-send initPrinter after this many not-ready polls
+   * @param {number} [options.post_print_settle_ms] default 400 — queue drain before the post-dispatch status sample
    */
   constructor(options = {}) {
     super(IMIN_V1_DRIVER_KEY);
@@ -65,6 +73,10 @@ export class IminV1Driver extends BaseDriver {
     this.paper_profile =
       options.paper_profile || resolvePaperProfile(REFERENCE_PROFILE.key);
     this.post_connect_delay_ms = options.post_connect_delay_ms || 0;
+    this.ready_timeout_ms = options.ready_timeout_ms ?? 6000;
+    this.ready_poll_interval_ms = options.ready_poll_interval_ms ?? 300;
+    this.reinit_after_polls = options.reinit_after_polls ?? 4;
+    this.post_print_settle_ms = options.post_print_settle_ms ?? 400;
     this.sdk_adapter =
       options.sdk_adapter ||
       new IminSdkAdapter({
@@ -81,21 +93,13 @@ export class IminV1Driver extends BaseDriver {
   }
 
   async initialize(context) {
-    const result = this.sdk_adapter.initialize(this.connection_type);
-    if (!result || !result.accepted) {
-      throw this._sanitizeError(
-        result.error ||
-          makeError("PDP_PRINTER_NOT_READY", { phase: "PREFLIGHT" })
-      );
-    }
+    this._sendInitPrinter();
 
     if (this.post_connect_delay_ms > 0) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, this.post_connect_delay_ms)
-      );
+      await sleep(this.post_connect_delay_ms);
     }
 
-    const status = await this.getStatus();
+    const status = await this._awaitReady();
     if (!status.ready) {
       throw makeError("PDP_PRINTER_NOT_READY", {
         phase: "PREFLIGHT",
@@ -162,7 +166,7 @@ export class IminV1Driver extends BaseDriver {
       this._require(this.sdk_adapter.setPageFormat(profile.page_format));
       this._require(this.sdk_adapter.setTextWidth(profile.text_width_dots));
       this._require(this.sdk_adapter.setAlignment(0)); // left default (B-RCP-06)
-      this._require(this.sdk_adapter.setTextSize(1));
+      this._require(this.sdk_adapter.setTextSize(profile.text_size));
       this._require(this.sdk_adapter.setTextStyle(0));
 
       for (const line of renderReceiptLines(receipt_document, profile)) {
@@ -177,6 +181,13 @@ export class IminV1Driver extends BaseDriver {
       }
       this._require(this.sdk_adapter.feed(profile.final_feed));
       result.content_completed = true;
+
+      // The bridge is fire-and-forget: printText/feed return once the command
+      // is queued, so an immediate status query can still report READY from
+      // before the paper moved. Let the queue drain before sampling.
+      if (this.post_print_settle_ms > 0) {
+        await sleep(this.post_print_settle_ms);
+      }
 
       const post = await this.getStatus(); // bounded: adapter timeout; failure forbids SUCCEEDED
       result.metadata.post_status_checked = true;
@@ -225,6 +236,49 @@ export class IminV1Driver extends BaseDriver {
     if (!dispatch.accepted) {
       throw this._sanitizeError(dispatch.error);
     }
+  }
+
+  _sendInitPrinter() {
+    const result = this.sdk_adapter.initialize(this.connection_type);
+    if (!result || !result.accepted) {
+      throw this._sanitizeError(
+        result?.error ||
+          makeError("PDP_PRINTER_NOT_READY", { phase: "PREFLIGHT" })
+      );
+    }
+  }
+
+  /**
+   * Poll getPrinterStatus while the head reports DISCONNECTED, until READY or
+   * the cold-start budget runs out. initPrinter is fire-and-forget over the
+   * WebSocket bridge, so the first status sample after it routinely reports
+   * DISCONNECTED while the service still binds the SPI head. Both reference
+   * demos poll instead of sampling once, and re-send initPrinter when the
+   * status stays negative. Every other non-ready state (PAPER_OUT, COVER_OPEN,
+   * PAPER_LOW, UNKNOWN_ERROR) is physical or terminal — return it at once so
+   * preflight maps it to its own code instead of burning the budget.
+   */
+  async _awaitReady() {
+    const deadline = Date.now() + this.ready_timeout_ms;
+    let not_ready_polls = 0;
+    let status = await this.getStatus();
+
+    while (
+      status.state === "DISCONNECTED" &&
+      !status.ready &&
+      Date.now() < deadline
+    ) {
+      not_ready_polls += 1;
+      if (
+        this.reinit_after_polls > 0 &&
+        not_ready_polls % this.reinit_after_polls === 0
+      ) {
+        this._sendInitPrinter();
+      }
+      await sleep(this.ready_poll_interval_ms);
+      status = await this.getStatus();
+    }
+    return status;
   }
 
   _sanitizeError(error) {

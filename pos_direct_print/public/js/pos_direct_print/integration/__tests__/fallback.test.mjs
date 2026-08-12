@@ -460,7 +460,14 @@ function makeIminFoundation(script = {}) {
   registry.registerDriver({
     driver_key: "imin_v1",
     factory: () =>
-      new IminV1Driver({ sdk_adapter: adapter, paper_profile: TEST_PROFILE }),
+      new IminV1Driver({
+        sdk_adapter: adapter,
+        paper_profile: TEST_PROFILE,
+        // Collapse the hardware waits: these tests assert lifecycle settlement,
+        // not wall-clock timing.
+        ready_timeout_ms: 0,
+        post_print_settle_ms: 0,
+      }),
     capabilities: {
       supports_text: true,
       supports_feed: true,
