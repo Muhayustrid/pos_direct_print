@@ -122,6 +122,22 @@ def resolve_terminal_for_profile(company, pos_profile):
 
 
 @frappe.whitelist()
+def invoice_print_state(reference_doctype, reference_name):
+	"""Has this invoice already reached paper? Read-only, row-scoped.
+
+	The POS button row needs this before the cashier clicks anything: an invoice
+	reopened from Recent Orders must offer Reprint straight away, because a
+	repeated ORIGINAL print is refused by idempotency and would only earn a
+	conflict.
+
+	Scope comes from the standard Job query conditions, so a Job outside your
+	scope reads as not printed — there is no reprint you could perform on it
+	anyway. Returns a bare flag: no Job id, no terminal, nothing to correlate.
+	"""
+	return {"printed": bool(_reprintable_job_names(reference_doctype, reference_name))}
+
+
+@frappe.whitelist()
 def reprint_invoice(reference_doctype, reference_name, reason, terminal_id=None):
 	"""Authorize a REPRINT for an invoice and hand back a live reservation.
 
@@ -156,7 +172,28 @@ def _latest_reprintable_job(reference_doctype, reference_name, user):
 	transport uses, so a Manager outside the Job's Company/POS Profile is
 	refused here rather than inside the reprint chain.
 	"""
-	names = frappe.get_all(
+	names = _reprintable_job_names(reference_doctype, reference_name, scoped=False)
+	if not names:
+		frappe.throw(
+			_("PDP_JOB_NOT_FOUND: no reprintable print job for {0} {1}.").format(
+				reference_doctype, reference_name
+			),
+			exc=frappe.ValidationError,
+		)
+	return _scoped_job(names[0], user)
+
+
+def _reprintable_job_names(reference_doctype, reference_name, scoped=True):
+	"""Newest-first Job names for an invoice in a state that permits a reprint.
+
+	`scoped` runs the query through frappe.get_list so the standard permission
+	query conditions apply and out-of-scope rows drop out silently — note that
+	frappe.get_all always ignores permissions, so the distinction is the call,
+	not a flag. Pass False when the caller must instead refuse an out-of-scope
+	Job out loud through _scoped_job.
+	"""
+	query = frappe.get_list if scoped else frappe.get_all
+	return query(
 		"POS Print Job",
 		filters={
 			"reference_doctype": reference_doctype,
@@ -166,16 +203,7 @@ def _latest_reprintable_job(reference_doctype, reference_name, user):
 		pluck="name",
 		order_by="creation desc",
 		limit=1,
-		ignore_permissions=True,
 	)
-	if not names:
-		frappe.throw(
-			_("PDP_JOB_NOT_FOUND: no reprintable print job for {0} {1}.").format(
-				reference_doctype, reference_name
-			),
-			exc=frappe.ValidationError,
-		)
-	return _scoped_job(names[0], user)
 
 
 @frappe.whitelist()

@@ -65,6 +65,18 @@ class InMemoryApi {
     };
   }
 
+  /** Read-only: has this invoice already reached paper? Drives the button row
+   * before the cashier clicks anything. */
+  async invoicePrintState({ reference_doctype, reference_name }) {
+    const printed = [...this.jobs.values()].some(
+      (job) =>
+        job.reference_doctype === reference_doctype &&
+        job.reference_name === reference_name &&
+        ["SUCCEEDED", "UNCERTAIN", "FALLBACK_BROWSER"].includes(job.status)
+    );
+    return { printed };
+  }
+
   /** Server-side REPRINT: authorization runs server-side and returns a live
    * reservation on a NEW Job. Mirrors the real endpoint's refusals. */
   async reprintInvoice({ reference_doctype, reference_name, reason }) {
@@ -878,7 +890,7 @@ test("A-AT-11: safe retry reuses the SAME Job with a new Attempt", async () => {
 // the only POS path to a second physical copy. It renders for reprint-authorized
 // roles only, patches add_summary_btns exactly once, and restores on shutdown.
 
-/** Minimal jQuery stand-in: enough for the append/find/on the adapter uses. */
+/** Minimal jQuery stand-in: enough for the find/before/on/css the adapter uses. */
 function makeFakeNode(html = "") {
   const node = {
     html,
@@ -906,6 +918,13 @@ function makeFakeNode(html = "") {
               hit.visible = value !== "none";
             }
           });
+          return this;
+        },
+        // Insertion position matters: it decides the rendered button order.
+        before(sibling) {
+          if (hits.length) {
+            node.children.splice(node.children.indexOf(hits[0]), 0, sibling);
+          }
           return this;
         },
       };
@@ -967,11 +986,16 @@ function withDeskGlobals({ roles = [], captured = {} } = {}) {
   };
 }
 
-function makeReprintAdapter() {
-  return new POSIntegrationAdapter({
+function makeReprintAdapter(api) {
+  const adapter = new POSIntegrationAdapter({
     get_settings: () => ({ enabled: true }),
     resolve_terminal_context: fakeResolveTerminalContext,
   });
+  if (api) {
+    // The button row asks the server whether the invoice already printed.
+    adapter._setPrintApi(api);
+  }
+  return adapter;
 }
 
 test("reprint button renders for a Manager and patches add_summary_btns once", () => {
@@ -1100,10 +1124,11 @@ test("shutdown restores both the print override and the reprint button", () => {
 });
 
 /**
- * One slot, two buttons: render the summary's button row the way ERPNext does,
- * then run the intercepted print. Returns the row plus its two button handles.
+ * Render the summary's button row the way ERPNext does — Print Receipt already
+ * present — and wait for the adapter's server-driven slot sync to settle.
+ * Returns the summary plus a live view of the two buttons.
  */
-async function printThroughSummaryRow(adapter, manager, prototype) {
+async function renderSummaryRow(adapter, manager, prototype) {
   adapter.installOverride(manager, prototype);
   adapter.installReprintButton(manager, prototype);
 
@@ -1111,13 +1136,29 @@ async function printThroughSummaryRow(adapter, manager, prototype) {
   summary.$summary_btns = makeFakeNode();
   summary.$summary_btns.append(makeFakeNode("print-btn"));
   prototype.add_summary_btns.call(summary, []);
+  await adapter.slot_sync;
 
-  const outcome = await prototype.print_receipt.call(summary);
   return {
-    outcome,
-    print_btn: _childWithClass(summary.$summary_btns, "print-btn"),
-    reprint_btn: _childWithClass(summary.$summary_btns, "pdp-reprint-btn"),
+    summary,
+    get print_btn() {
+      return _childWithClass(summary.$summary_btns, "print-btn");
+    },
+    get reprint_btn() {
+      return _childWithClass(summary.$summary_btns, "pdp-reprint-btn");
+    },
+    get labels() {
+      return summary.$summary_btns.children.map(
+        (child) => _classesOf(child.html).slice(-1)[0]
+      );
+    },
   };
+}
+
+/** Render the row, then run the intercepted print through it. */
+async function printThroughSummaryRow(adapter, manager, prototype) {
+  const row = await renderSummaryRow(adapter, manager, prototype);
+  const outcome = await prototype.print_receipt.call(row.summary);
+  return { outcome, row };
 }
 
 /** Exact-class child lookup; substring matching would confuse the two buttons. */
@@ -1130,17 +1171,47 @@ function _childWithClass(container, cls) {
 test("Reprint takes over the Print Receipt slot once content may be on paper", async () => {
   const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
   try {
-    const { manager } = makeFoundation();
-    const { outcome, print_btn, reprint_btn } = await printThroughSummaryRow(
-      makeReprintAdapter(),
+    const { manager, api } = makeFoundation();
+    const { outcome, row } = await printThroughSummaryRow(
+      makeReprintAdapter(api),
       manager,
       makeSummaryPrototype()
     );
 
     assert.equal(outcome.status, "SUCCEEDED");
     // Exactly one of the two occupies the slot, so the row keeps its layout.
-    assert.equal(print_btn.visible, false, "Print Receipt yields its slot");
-    assert.equal(reprint_btn.visible, true, "Reprint takes the slot");
+    assert.equal(row.print_btn.visible, false, "Print Receipt yields its slot");
+    assert.equal(row.reprint_btn.visible, true, "Reprint takes the slot");
+  } finally {
+    restore();
+  }
+});
+
+test("Reprint occupies the Print Receipt position, not the end of the row", async () => {
+  const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
+  try {
+    const { manager, api } = makeFoundation();
+    const adapter = makeReprintAdapter(api);
+    const prototype = makeSummaryPrototype();
+    adapter.installOverride(manager, prototype);
+    adapter.installReprintButton(manager, prototype);
+
+    // A full ERPNext row: Print Receipt, Email Receipt, Return.
+    const summary = makeSummary();
+    summary.$summary_btns = makeFakeNode();
+    summary.$summary_btns.append(makeFakeNode("print-btn"));
+    summary.$summary_btns.append(makeFakeNode("email-btn"));
+    summary.$summary_btns.append(makeFakeNode("return-btn"));
+    prototype.add_summary_btns.call(summary, []);
+    await adapter.slot_sync;
+
+    assert.deepEqual(
+      summary.$summary_btns.children.map(
+        (child) => _classesOf(child.html).slice(-1)[0]
+      ),
+      ["pdp-reprint-btn", "print-btn", "email-btn", "return-btn"],
+      "Reprint sits in the Print Receipt position, sharing its slot"
+    );
   } finally {
     restore();
   }
@@ -1151,45 +1222,69 @@ test("a pre-output failure keeps Print Receipt in the slot", async () => {
   try {
     // FAILED_SAFE printed nothing, so a plain second print is still legal and
     // the cashier must not be pushed down the reprint path.
-    const { manager } = makeFoundation({
+    const { manager, api } = makeFoundation({
       driver_script: { print_behavior: "fail_before_content" },
     });
-    const { outcome, print_btn, reprint_btn } = await printThroughSummaryRow(
-      makeReprintAdapter(),
+    const { outcome, row } = await printThroughSummaryRow(
+      makeReprintAdapter(api),
       manager,
       makeSummaryPrototype()
     );
 
     assert.equal(outcome.status, "FAILED_SAFE");
-    assert.equal(print_btn.visible, true, "Print Receipt keeps the slot");
-    assert.equal(reprint_btn.visible, false, "Reprint stays hidden");
+    assert.equal(row.print_btn.visible, true, "Print Receipt keeps the slot");
+    assert.equal(row.reprint_btn.visible, false, "Reprint stays hidden");
   } finally {
     restore();
   }
 });
 
-test("reopening an already-printed order hands the slot to Reprint", async () => {
+test("reopening an already-printed order shows Reprint before any click", async () => {
   const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
   try {
-    const { manager } = makeFoundation();
-    const adapter = makeReprintAdapter();
+    const { manager, api } = makeFoundation();
+    const adapter = makeReprintAdapter(api);
     const prototype = makeSummaryPrototype();
 
     // First print settles SUCCEEDED. Reopening the order renders a fresh button
-    // row, and the print there hits the settled Job through the unchanged
-    // idempotency key: PDP_JOB_CONFLICT, no second copy. The slot must still
-    // flip, or the cashier is left clicking a button that can only ever fail.
+    // row: the cashier must see Reprint immediately, without having to click
+    // Print Receipt first — a click there could only earn PDP_JOB_CONFLICT,
+    // because the unchanged idempotency key joins the settled Job.
     await printThroughSummaryRow(adapter, manager, prototype);
-    const { outcome, print_btn, reprint_btn } = await printThroughSummaryRow(
-      adapter,
+    const reopened = await renderSummaryRow(adapter, manager, prototype);
+
+    assert.equal(
+      reopened.print_btn.visible,
+      false,
+      "Print Receipt is already out of the slot"
+    );
+    assert.equal(
+      reopened.reprint_btn.visible,
+      true,
+      "Reprint is offered on render"
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("an unreachable print-state lookup leaves Print Receipt in the slot", async () => {
+  const restore = withDeskGlobals({ roles: ["POS Print Manager"] });
+  try {
+    const { manager, api } = makeFoundation();
+    // Fail open: hiding Print Receipt on a failed lookup would strand an
+    // unprinted order with no way to print it.
+    api.invoicePrintState = async () => {
+      throw new Error("PDP_SERVER_UNAVAILABLE");
+    };
+    const reopened = await renderSummaryRow(
+      makeReprintAdapter(api),
       manager,
-      prototype
+      makeSummaryPrototype()
     );
 
-    assert.equal(outcome.success, false);
-    assert.equal(outcome.error.code, "PDP_JOB_CONFLICT");
-    assert.equal(print_btn.visible, false, "Print Receipt yields its slot");
-    assert.equal(reprint_btn.visible, true, "Reprint takes the slot");
+    assert.equal(reopened.print_btn.visible, true);
+    assert.equal(reopened.reprint_btn.visible, false);
   } finally {
     restore();
   }
