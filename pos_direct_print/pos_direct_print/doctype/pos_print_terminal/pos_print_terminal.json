@@ -7,33 +7,59 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "terminal_tab",
+  "identity_section",
   "terminal_id",
   "terminal_label",
+  "identity_column",
   "enabled",
+  "binding_section",
   "company",
   "pos_profile",
+  "extra_pos_profiles",
+  "hardware_tab",
+  "hardware_section",
   "driver_key",
+  "transport",
+  "hardware_column",
+  "paper_width_mm",
+  "cutter_capability",
+  "diagnostics_section",
   "device_model",
   "device_serial",
   "android_version",
+  "diagnostics_column",
   "rom_build",
   "plugin_version",
   "browser_version",
   "webview_version",
-  "transport",
-  "paper_width_mm",
-  "cutter_capability",
+  "qualification_tab",
+  "qualification_section",
   "qualification_status",
   "qualification_revision",
+  "qualification_column",
   "capability_schema_version",
   "capabilities_json",
+  "notes",
+  "runtime_tab",
+  "runtime_section",
   "last_seen_at",
   "last_health_state",
+  "runtime_column",
   "paired_client_id",
-  "pairing_status",
-  "notes"
+  "pairing_status"
  ],
  "fields": [
+  {
+   "fieldname": "terminal_tab",
+   "fieldtype": "Tab Break",
+   "label": "Terminal"
+  },
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
   {
    "fieldname": "terminal_id",
    "fieldtype": "Data",
@@ -45,21 +71,35 @@
   {
    "fieldname": "terminal_label",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Terminal Label",
    "reqd": 1,
    "search_index": 1
   },
   {
+   "fieldname": "identity_column",
+   "fieldtype": "Column Break"
+  },
+  {
    "default": "1",
    "fieldname": "enabled",
    "fieldtype": "Check",
+   "in_standard_filter": 1,
    "label": "Enabled",
    "reqd": 1,
    "search_index": 1
   },
   {
+   "description": "Which outlet this terminal serves. Printing for any other POS Profile requires that profile in Additional POS Profiles below.",
+   "fieldname": "binding_section",
+   "fieldtype": "Section Break",
+   "label": "Outlet Binding"
+  },
+  {
    "fieldname": "company",
    "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Company",
    "options": "Company",
    "reqd": 1,
@@ -68,10 +108,29 @@
   {
    "fieldname": "pos_profile",
    "fieldtype": "Link",
-   "label": "POS Profile",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Default POS Profile",
    "options": "POS Profile",
    "reqd": 1,
    "search_index": 1
+  },
+  {
+   "description": "Extra outlets this same physical terminal may print for. Leave empty when the terminal serves one outlet only.",
+   "fieldname": "extra_pos_profiles",
+   "fieldtype": "Table",
+   "label": "Additional POS Profiles",
+   "options": "POS Print Terminal Profile"
+  },
+  {
+   "fieldname": "hardware_tab",
+   "fieldtype": "Tab Break",
+   "label": "Hardware"
+  },
+  {
+   "fieldname": "hardware_section",
+   "fieldtype": "Section Break",
+   "label": "Printer"
   },
   {
    "default": "imin_v1",
@@ -81,6 +140,47 @@
    "reqd": 1,
    "search_index": 1,
    "permlevel": 1
+  },
+  {
+   "default": "SPI",
+   "description": "iMin built-in printers use SPI. Change only with evidence from the device.",
+   "fieldname": "transport",
+   "fieldtype": "Select",
+   "label": "Transport",
+   "options": "UNKNOWN\nUSB\nSPI\nBLUETOOTH",
+   "reqd": 1,
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "fieldname": "hardware_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "58",
+   "fieldname": "paper_width_mm",
+   "fieldtype": "Select",
+   "label": "Paper Width mm",
+   "options": "UNKNOWN\n58\n80",
+   "reqd": 1,
+   "search_index": 1,
+   "permlevel": 1
+  },
+  {
+   "default": "UNKNOWN",
+   "fieldname": "cutter_capability",
+   "fieldtype": "Select",
+   "label": "Cutter Capability",
+   "options": "UNKNOWN\nSUPPORTED\nUNSUPPORTED",
+   "reqd": 1,
+   "permlevel": 1
+  },
+  {
+   "collapsible": 1,
+   "description": "Evidence recorded during qualification. Optional, and never used to pick a driver at runtime.",
+   "fieldname": "diagnostics_section",
+   "fieldtype": "Section Break",
+   "label": "Device Diagnostics"
   },
   {
    "fieldname": "device_model",
@@ -101,6 +201,10 @@
    "fieldtype": "Data",
    "label": "Android Version",
    "permlevel": 1
+  },
+  {
+   "fieldname": "diagnostics_column",
+   "fieldtype": "Column Break"
   },
   {
    "fieldname": "rom_build",
@@ -127,38 +231,22 @@
    "permlevel": 1
   },
   {
-   "default": "UNKNOWN",
-   "fieldname": "transport",
-   "fieldtype": "Select",
-   "label": "Transport",
-   "options": "UNKNOWN\nUSB\nSPI\nBLUETOOTH",
-   "reqd": 1,
-   "search_index": 1,
-   "permlevel": 1
+   "fieldname": "qualification_tab",
+   "fieldtype": "Tab Break",
+   "label": "Qualification"
   },
   {
-   "default": "UNKNOWN",
-   "fieldname": "paper_width_mm",
-   "fieldtype": "Select",
-   "label": "Paper Width mm",
-   "options": "UNKNOWN\n58\n80",
-   "reqd": 1,
-   "search_index": 1,
-   "permlevel": 1
-  },
-  {
-   "default": "UNKNOWN",
-   "fieldname": "cutter_capability",
-   "fieldtype": "Select",
-   "label": "Cutter Capability",
-   "options": "UNKNOWN\nSUPPORTED\nUNSUPPORTED",
-   "reqd": 1,
-   "permlevel": 1
+   "description": "A terminal only serves live printing once it is QUALIFIED.",
+   "fieldname": "qualification_section",
+   "fieldtype": "Section Break",
+   "label": "Status"
   },
   {
    "default": "UNVERIFIED",
    "fieldname": "qualification_status",
    "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Qualification Status",
    "options": "UNVERIFIED\nQUALIFIED\nBLOCKED",
    "reqd": 1,
@@ -169,6 +257,10 @@
    "fieldtype": "Data",
    "label": "Qualification Revision",
    "permlevel": 1
+  },
+  {
+   "fieldname": "qualification_column",
+   "fieldtype": "Column Break"
   },
   {
    "default": "1",
@@ -183,6 +275,23 @@
    "fieldtype": "Long Text",
    "label": "Capabilities JSON",
    "permlevel": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "runtime_tab",
+   "fieldtype": "Tab Break",
+   "label": "Runtime"
+  },
+  {
+   "description": "Written by the system during printing. Read-only in practice.",
+   "fieldname": "runtime_section",
+   "fieldtype": "Section Break",
+   "label": "Health"
   },
   {
    "fieldname": "last_seen_at",
@@ -200,6 +309,10 @@
    "search_index": 1
   },
   {
+   "fieldname": "runtime_column",
+   "fieldtype": "Column Break"
+  },
+  {
    "fieldname": "paired_client_id",
    "fieldtype": "Data",
    "label": "Paired Client ID",
@@ -215,17 +328,11 @@
    "reqd": 1,
    "search_index": 1,
    "permlevel": 1
-  },
-  {
-   "fieldname": "notes",
-   "fieldtype": "Small Text",
-   "label": "Notes",
-   "permlevel": 1
   }
  ],
  "is_submittable": 0,
  "links": [],
- "modified": "2026-08-10 00:00:00.000000",
+ "modified": "2026-08-13 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Pos Direct Print",
  "name": "POS Print Terminal",

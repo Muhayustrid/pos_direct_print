@@ -2,36 +2,54 @@ import frappe
 from frappe.exceptions import DuplicateEntryError
 from frappe.tests import IntegrationTestCase
 
+from pos_direct_print.core import terminal_scope
+
 DOCTYPE = "POS Print Terminal"
 TABLE_NAME = "tabPOS Print Terminal"
 
 # fieldname -> (fieldtype, reqd, default, options)
 FIELD_SPECS = {
+	"terminal_tab": ("Tab Break", 0, None, None),
+	"identity_section": ("Section Break", 0, None, None),
 	"terminal_id": ("Data", 1, None, None),
 	"terminal_label": ("Data", 1, None, None),
+	"identity_column": ("Column Break", 0, None, None),
 	"enabled": ("Check", 1, "1", None),
+	"binding_section": ("Section Break", 0, None, None),
 	"company": ("Link", 1, None, "Company"),
 	"pos_profile": ("Link", 1, None, "POS Profile"),
+	"extra_pos_profiles": ("Table", 0, None, "POS Print Terminal Profile"),
+	"hardware_tab": ("Tab Break", 0, None, None),
+	"hardware_section": ("Section Break", 0, None, None),
 	"driver_key": ("Data", 1, "imin_v1", None),
+	"transport": ("Select", 1, "SPI", "UNKNOWN\nUSB\nSPI\nBLUETOOTH"),
+	"hardware_column": ("Column Break", 0, None, None),
+	"paper_width_mm": ("Select", 1, "58", "UNKNOWN\n58\n80"),
+	"cutter_capability": ("Select", 1, "UNKNOWN", "UNKNOWN\nSUPPORTED\nUNSUPPORTED"),
+	"diagnostics_section": ("Section Break", 0, None, None),
 	"device_model": ("Data", 0, None, None),
 	"device_serial": ("Data", 0, None, None),
 	"android_version": ("Data", 0, None, None),
+	"diagnostics_column": ("Column Break", 0, None, None),
 	"rom_build": ("Data", 0, None, None),
 	"plugin_version": ("Data", 0, None, None),
 	"browser_version": ("Data", 0, None, None),
 	"webview_version": ("Data", 0, None, None),
-	"transport": ("Select", 1, "UNKNOWN", "UNKNOWN\nUSB\nSPI\nBLUETOOTH"),
-	"paper_width_mm": ("Select", 1, "UNKNOWN", "UNKNOWN\n58\n80"),
-	"cutter_capability": ("Select", 1, "UNKNOWN", "UNKNOWN\nSUPPORTED\nUNSUPPORTED"),
+	"qualification_tab": ("Tab Break", 0, None, None),
+	"qualification_section": ("Section Break", 0, None, None),
 	"qualification_status": ("Select", 1, "UNVERIFIED", "UNVERIFIED\nQUALIFIED\nBLOCKED"),
 	"qualification_revision": ("Data", 0, None, None),
+	"qualification_column": ("Column Break", 0, None, None),
 	"capability_schema_version": ("Int", 1, "1", None),
 	"capabilities_json": ("Long Text", 0, None, None),
+	"notes": ("Small Text", 0, None, None),
+	"runtime_tab": ("Tab Break", 0, None, None),
+	"runtime_section": ("Section Break", 0, None, None),
 	"last_seen_at": ("Datetime", 0, None, None),
 	"last_health_state": ("Select", 1, "UNKNOWN", "UNKNOWN\nREADY\nDEGRADED\nOFFLINE"),
+	"runtime_column": ("Column Break", 0, None, None),
 	"paired_client_id": ("Data", 0, None, None),
 	"pairing_status": ("Select", 1, "UNPAIRED", "UNPAIRED\nPAIRED\nREVOKED"),
-	"notes": ("Small Text", 0, None, None),
 }
 
 SEARCH_INDEXED_FIELDS = {
@@ -60,7 +78,7 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 		self.assertEqual(meta.module, "Pos Direct Print")
 		self.assertEqual(meta.autoname, "field:terminal_id")
 
-	def test_has_exactly_twenty_five_fields_with_schema(self):
+	def test_field_schema_matches_spec(self):
 		meta = frappe.get_meta(DOCTYPE)
 
 		fields = {field.fieldname: field for field in meta.fields}
@@ -82,13 +100,16 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 
 		self.assertEqual(terminal.enabled, 1)
 		self.assertEqual(terminal.driver_key, "imin_v1")
-		self.assertEqual(terminal.transport, "UNKNOWN")
-		self.assertEqual(terminal.paper_width_mm, "UNKNOWN")
+		# SPI and 58 mm are the fleet reality, so a new terminal starts there
+		# instead of forcing every operator to pick the same two values.
+		self.assertEqual(terminal.transport, "SPI")
+		self.assertEqual(terminal.paper_width_mm, "58")
 		self.assertEqual(terminal.cutter_capability, "UNKNOWN")
 		self.assertEqual(terminal.qualification_status, "UNVERIFIED")
 		self.assertEqual(terminal.capability_schema_version, 1)
 		self.assertEqual(terminal.last_health_state, "UNKNOWN")
 		self.assertEqual(terminal.pairing_status, "UNPAIRED")
+		self.assertEqual(terminal.extra_pos_profiles, [])
 
 	def test_single_column_indexes_exist(self):
 		for fieldname in SEARCH_INDEXED_FIELDS:
@@ -115,6 +136,94 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 
 		self.assertEqual(index_columns.get("IDX_TERM_01"), ["company", "pos_profile", "enabled"])
 		self.assertEqual(index_columns.get("IDX_TERM_02"), ["paired_client_id", "enabled"])
+
+	def test_extra_profile_child_index_exists(self):
+		rows = frappe.db.sql(
+			"""
+			SELECT COLUMN_NAME
+			FROM information_schema.STATISTICS
+			WHERE TABLE_SCHEMA = DATABASE()
+				AND TABLE_NAME = "tabPOS Print Terminal Profile"
+				AND INDEX_NAME = "IDX_TERMPROF_01"
+			ORDER BY SEQ_IN_INDEX
+			""",
+			as_dict=True,
+		)
+		self.assertEqual([row.COLUMN_NAME for row in rows], ["pos_profile", "parent"])
+
+	def test_extra_profiles_widen_what_the_terminal_serves(self):
+		# One counter, two outlets, one printer: the second outlet is an extra row
+		# rather than a second terminal.
+		other = _second_pos_profile()
+		terminal = _new_terminal("TERM-MULTI-01")
+		terminal.append("extra_pos_profiles", {"pos_profile": other})
+		terminal.save(ignore_permissions=True)
+
+		self.assertEqual(terminal_scope.served_pos_profiles(terminal.name), [terminal.pos_profile, other])
+		self.assertTrue(terminal_scope.serves_pos_profile(terminal.name, other))
+
+	def test_extra_profile_may_not_repeat_the_default(self):
+		terminal = _new_terminal("TERM-MULTI-02")
+		terminal.append("extra_pos_profiles", {"pos_profile": terminal.pos_profile})
+
+		with self.assertRaises(frappe.ValidationError):
+			terminal.save(ignore_permissions=True)
+
+	def test_extra_profile_may_not_repeat_itself(self):
+		other = _second_pos_profile()
+		terminal = _new_terminal("TERM-MULTI-03")
+		terminal.append("extra_pos_profiles", {"pos_profile": other})
+		terminal.append("extra_pos_profiles", {"pos_profile": other})
+
+		with self.assertRaises(frappe.ValidationError):
+			terminal.save(ignore_permissions=True)
+
+	def test_extra_profile_from_another_company_is_refused(self):
+		# Company is the outer boundary of every scope check, so an extra row must
+		# never be the way a print crosses it.
+		foreign = frappe.db.get_value("POS Profile", {"company": ("!=", _company())}, "name")
+		if not foreign:
+			self.skipTest("site has no POS Profile outside the test Company")
+		terminal = _new_terminal("TERM-MULTI-04")
+		terminal.append("extra_pos_profiles", {"pos_profile": foreign})
+
+		with self.assertRaises(frappe.ValidationError):
+			terminal.save(ignore_permissions=True)
+
+	def test_extra_profiles_do_not_widen_manager_doctype_reads(self):
+		# Frappe applies the POS Profile User Permission to the terminal's own
+		# pos_profile Link field, so an extra row cannot grant a Manager a read on
+		# a terminal bound elsewhere. Terminal administration stays System Manager
+		# work (A.31.5); printing scope lives in core.terminal_scope instead.
+		default_outlet = _second_pos_profile()
+		managed_outlet = _pos_profile()
+		manager = self._create_user("pdp.manager.multi@example.test", "POS Print Manager")
+		frappe.get_doc(
+			{
+				"doctype": "User Permission",
+				"user": manager.name,
+				"allow": "POS Profile",
+				"for_value": managed_outlet,
+			}
+		).insert(ignore_permissions=True)
+
+		shared = _new_terminal("TERM-SCOPE-01")
+		shared.pos_profile = default_outlet
+		shared.append("extra_pos_profiles", {"pos_profile": managed_outlet})
+		shared.save(ignore_permissions=True)
+
+		try:
+			frappe.set_user(manager.name)
+			frappe.clear_cache(user=manager.name)
+			visible = {row.name for row in frappe.get_list(DOCTYPE, fields=["name"], limit=0)}
+			self.assertNotIn(shared.name, visible)
+			with self.assertRaises(frappe.PermissionError):
+				frappe.get_doc(DOCTYPE, shared.name).check_permission("read")
+		finally:
+			frappe.set_user("Administrator")
+
+		# The printing rule is the one that widened, and it did.
+		self.assertTrue(terminal_scope.serves_pos_profile(shared.name, managed_outlet))
 
 	def test_terminal_id_unique_constraint(self):
 		# A-AT-02: unique constraint on terminal_id.
@@ -235,6 +344,18 @@ def _pos_profile():
 	return frappe.db.get_value("POS Profile", {"company": _company()}, "name") or frappe.db.get_value(
 		"POS Profile", {}, "name"
 	)
+
+
+def _second_pos_profile():
+	"""A different POS Profile in the same Company, created if the site lacks one."""
+	default = _pos_profile()
+	existing = frappe.db.get_value("POS Profile", {"company": _company(), "name": ("!=", default)}, "name")
+	if existing:
+		return existing
+	profile = frappe.copy_doc(frappe.get_doc("POS Profile", default))
+	profile.name = "PDP Terminal Second Outlet"
+	profile.set("applicable_for_users", [])
+	return profile.insert(ignore_permissions=True).name
 
 
 def _new_terminal(terminal_id):

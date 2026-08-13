@@ -12,6 +12,7 @@ from frappe.utils import cint, now_datetime
 
 from pos_direct_print.core import reprint as reprint_service
 from pos_direct_print.core import reservation as reservation_service
+from pos_direct_print.core import terminal_scope
 from pos_direct_print.core.projections import (
 	job_status_projection,
 	outcome_projection,
@@ -87,19 +88,14 @@ def resolve_terminal_for_profile(company, pos_profile):
 				_("PDP_PERMISSION_DENIED: POS Profile is outside your authorized scope."),
 				exc=frappe.PermissionError,
 			)
-	filters = {
-		"company": company,
-		"pos_profile": pos_profile,
-		"enabled": 1,
-		"qualification_status": "QUALIFIED",
-	}
-	name = frappe.db.get_value("POS Print Terminal", filters, "name", order_by="creation asc")
+	# A terminal may serve more than one outlet, so the lookup asks which
+	# terminals serve this profile rather than filtering on the default binding.
+	name = next(
+		iter(terminal_scope.terminal_names_serving(pos_profile, company=company, qualified=True)),
+		None,
+	)
 	if not name:
-		enabled = frappe.db.get_value(
-			"POS Print Terminal",
-			{"company": company, "pos_profile": pos_profile, "enabled": 1},
-			"name",
-		)
+		enabled = terminal_scope.terminal_names_serving(pos_profile, company=company)
 		if enabled:
 			frappe.throw(
 				_("PDP_TERMINAL_NOT_QUALIFIED: no qualified terminal for {0} / {1}.").format(
@@ -211,16 +207,16 @@ def _reprintable_jobs(reference_doctype, reference_name, scoped=True):
 def _reprint_terminal_still_matches(job):
 	"""Would a reprint of this Job survive the terminal guard in core.reprint?
 
-	A terminal can be reassigned to another POS Profile after a receipt printed.
-	The reprint chain then refuses the Job, because reprinting an outlet's
-	receipt on a terminal now serving a different outlet crosses that boundary.
-	Report such a Job as not printed so the row keeps Print Receipt instead of
-	offering a button whose only outcome is PDP_JOB_CONFLICT.
+	A terminal can stop serving an outlet after a receipt printed — the outlet
+	is dropped from its profile list, or the terminal is disabled. The reprint
+	chain then refuses the Job, because reprinting one outlet's receipt on a
+	terminal that no longer serves it crosses that boundary. Report such a Job
+	as not printed so the row keeps Print Receipt instead of offering a button
+	whose only outcome is PDP_JOB_CONFLICT.
 	"""
-	terminal = frappe.db.get_value(
-		"POS Print Terminal", job.terminal, ["pos_profile", "enabled"], as_dict=True
-	)
-	return bool(terminal and terminal.enabled and terminal.pos_profile == job.pos_profile)
+	if not frappe.db.get_value("POS Print Terminal", job.terminal, "enabled"):
+		return False
+	return terminal_scope.serves_pos_profile(job.terminal, job.pos_profile)
 
 
 @frappe.whitelist()
@@ -261,7 +257,7 @@ def reserve_print_job(
 		reference_doctype=reference_doctype,
 		reference_name=reference_name,
 		company=terminal.company,
-		pos_profile=terminal.pos_profile,
+		pos_profile=_job_pos_profile(reference_doctype, reference_name, terminal),
 		terminal=terminal.name,
 		requested_by=requested_by,
 		source=source,
@@ -280,6 +276,33 @@ def reserve_print_job(
 	reserved = reservation_service.reserve_job(job.name, reservation_owner or requested_by)
 	reserved.flags.is_new_job = is_new
 	return _reservation_payload(reserved)
+
+
+def _job_pos_profile(reference_doctype, reference_name, terminal):
+	"""The outlet a Job belongs to: the invoice's POS Profile, not the terminal's.
+
+	One terminal can serve several outlets, so its default binding is not the
+	outlet that sold the receipt. Recording the invoice's own POS Profile keeps
+	the audit trail honest and keeps the Manager who owns that outlet inside the
+	Job's scope. The terminal must actually serve the outlet, otherwise printing
+	there would cross the boundary the reprint guard defends.
+
+	Falls back to the terminal default when the reference carries no POS Profile
+	— test fixtures point the reference at other DocTypes.
+	"""
+	if not frappe.get_meta(reference_doctype).has_field("pos_profile"):
+		return terminal.pos_profile
+	pos_profile = frappe.db.get_value(reference_doctype, reference_name, "pos_profile")
+	if not pos_profile:
+		return terminal.pos_profile
+	if not terminal_scope.serves_pos_profile(terminal, pos_profile):
+		frappe.throw(
+			_("PDP_JOB_CONFLICT: terminal {0} does not serve POS Profile {1}.").format(
+				terminal.name, pos_profile
+			),
+			exc=frappe.ValidationError,
+		)
+	return pos_profile
 
 
 @frappe.whitelist()
@@ -532,9 +555,11 @@ def _scoped_terminal(terminal_id, user):
 			_("PDP_PERMISSION_DENIED: terminal is outside your authorized companies."),
 			exc=frappe.PermissionError,
 		)
-	manager_allowed = scopes["manager"] and terminal.pos_profile in scopes["profiles"]
-	operator_allowed = scopes["operator"] and operator_pos_profile_is_applicable(
-		user, terminal.pos_profile, terminal.company
+	# A terminal may serve several outlets; any served outlet in scope is enough.
+	served = terminal_scope.served_pos_profiles(terminal)
+	manager_allowed = scopes["manager"] and any(profile in scopes["profiles"] for profile in served)
+	operator_allowed = scopes["operator"] and any(
+		operator_pos_profile_is_applicable(user, profile, terminal.company) for profile in served
 	)
 	if manager_allowed or operator_allowed:
 		return terminal
