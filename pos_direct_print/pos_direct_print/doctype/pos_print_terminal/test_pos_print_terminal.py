@@ -162,6 +162,40 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 		self.assertEqual(terminal_scope.served_pos_profiles(terminal.name), [terminal.pos_profile, other])
 		self.assertTrue(terminal_scope.serves_pos_profile(terminal.name, other))
 
+	def test_extra_profile_is_optional_and_a_blank_row_is_dropped(self):
+		# The table is an option, not a requirement. A row left blank — or emptied
+		# to undo an extra outlet — must save, because a reqd child field would
+		# trap the operator in a grid they cannot clear.
+		terminal = _new_terminal("TERM-MULTI-05")
+		terminal.append("extra_pos_profiles", {})
+		terminal.save(ignore_permissions=True)
+
+		self.assertEqual(terminal.extra_pos_profiles, [])
+		self.assertEqual(terminal_scope.served_pos_profiles(terminal.name), [terminal.pos_profile])
+
+	def test_emptying_an_extra_profile_row_removes_it(self):
+		other = _second_pos_profile()
+		terminal = _new_terminal("TERM-MULTI-06")
+		terminal.append("extra_pos_profiles", {"pos_profile": other})
+		terminal.save(ignore_permissions=True)
+		self.assertTrue(terminal_scope.serves_pos_profile(terminal.name, other))
+
+		terminal.extra_pos_profiles[0].pos_profile = None
+		terminal.save(ignore_permissions=True)
+
+		self.assertEqual(terminal.extra_pos_profiles, [])
+		self.assertFalse(terminal_scope.serves_pos_profile(terminal.name, other))
+
+	def test_blank_row_does_not_shift_the_remaining_row_indexes(self):
+		other = _second_pos_profile()
+		terminal = _new_terminal("TERM-MULTI-07")
+		terminal.append("extra_pos_profiles", {})
+		terminal.append("extra_pos_profiles", {"pos_profile": other})
+		terminal.save(ignore_permissions=True)
+
+		self.assertEqual([row.pos_profile for row in terminal.extra_pos_profiles], [other])
+		self.assertEqual([row.idx for row in terminal.extra_pos_profiles], [1])
+
 	def test_extra_profile_may_not_repeat_the_default(self):
 		terminal = _new_terminal("TERM-MULTI-02")
 		terminal.append("extra_pos_profiles", {"pos_profile": terminal.pos_profile})
