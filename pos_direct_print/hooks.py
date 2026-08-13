@@ -8,7 +8,10 @@ app_license = "mit"
 # Apps
 # ------------------
 
-# required_apps = []
+# POS Print Terminal links POS Profile, POS Print Job links POS Invoice and Sales
+# Invoice. Without erpnext the DocType sync fails outright, and the Desktop Icon
+# below would be dropped in silence for want of its `ERPNext` parent.
+required_apps = ["erpnext"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
