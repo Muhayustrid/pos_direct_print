@@ -275,7 +275,7 @@
  "links": [],
  "modified": "2026-08-10 00:00:00.000000",
  "modified_by": "Administrator",
- "module": "Pos Direct Print",
+ "module": "Direct Print",
  "name": "POS Print Job",
  "naming_rule": "By fieldname",
  "owner": "Administrator",

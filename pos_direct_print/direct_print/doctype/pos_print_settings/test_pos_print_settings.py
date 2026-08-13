@@ -48,7 +48,7 @@ class TestPOSPrintSettings(IntegrationTestCase):
 
 		self.assertTrue(meta.issingle)
 		self.assertFalse(meta.is_submittable)
-		self.assertEqual(meta.module, "Pos Direct Print")
+		self.assertEqual(meta.module, "Direct Print")
 
 	def test_has_exactly_fifteen_required_fields_with_schema(self):
 		meta = frappe.get_meta(DOCTYPE)
