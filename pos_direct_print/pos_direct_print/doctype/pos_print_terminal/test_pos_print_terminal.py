@@ -1,3 +1,5 @@
+import uuid
+
 import frappe
 from frappe.exceptions import DuplicateEntryError
 from frappe.tests import IntegrationTestCase
@@ -232,6 +234,75 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			terminal.save(ignore_permissions=True)
 
+	def test_second_qualified_terminal_on_one_outlet_is_refused(self):
+		# Terminal resolution asks for Company + POS Profile and takes the oldest
+		# match, so a second QUALIFIED terminal on one outlet would lose that race
+		# in silence and print Jobs recorded against the other device.
+		outlet = _isolated_pos_profile()
+		first = _qualified_terminal("TERM-ONE-01", outlet)
+
+		second = _new_terminal("TERM-ONE-02")
+		second.pos_profile = outlet
+		second.qualification_status = "QUALIFIED"
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			second.save(ignore_permissions=True)
+		self.assertIn("already served by terminal", str(ctx.exception))
+		self.assertIn(first.name, str(ctx.exception))
+
+	def test_collision_through_an_extra_row_is_refused_too(self):
+		# The extra table must not be the back door into the collision the default
+		# binding is checked for.
+		outlet = _isolated_pos_profile()
+		_qualified_terminal("TERM-ONE-03", outlet)
+
+		other = _qualified_terminal("TERM-ONE-04", _isolated_pos_profile())
+		other.append("extra_pos_profiles", {"pos_profile": outlet})
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			other.save(ignore_permissions=True)
+		self.assertIn("already served by terminal", str(ctx.exception))
+
+	def test_unverified_terminal_may_share_an_outlet(self):
+		# Only an enabled QUALIFIED terminal can win the lookup, so an UNVERIFIED
+		# one cannot steal a Job and is free to overlap — that is how a replacement
+		# device is staged before it takes over.
+		outlet = _isolated_pos_profile()
+		_qualified_terminal("TERM-ONE-05", outlet)
+
+		staged = _new_terminal("TERM-ONE-06")
+		staged.pos_profile = outlet
+		staged.save(ignore_permissions=True)
+
+		self.assertEqual(staged.qualification_status, "UNVERIFIED")
+
+	def test_disabled_terminal_may_share_an_outlet(self):
+		# A retired terminal keeps its QUALIFIED history — enabled = 0 is how it is
+		# taken out of service — so it must not block its own replacement.
+		outlet = _isolated_pos_profile()
+		retired = _new_terminal("TERM-ONE-07")
+		retired.pos_profile = outlet
+		retired.qualification_status = "QUALIFIED"
+		retired.enabled = 0
+		retired.save(ignore_permissions=True)
+
+		replacement = _qualified_terminal("TERM-ONE-08", outlet)
+
+		self.assertEqual(
+			terminal_scope.terminal_names_serving(outlet, company=_company(), qualified=True),
+			[replacement.name],
+		)
+
+	def test_resaving_the_only_terminal_for_an_outlet_is_allowed(self):
+		# The check must skip the row being saved, otherwise a terminal could never
+		# be edited again once it is QUALIFIED.
+		terminal = _qualified_terminal("TERM-ONE-09", _isolated_pos_profile())
+
+		terminal.terminal_label = "Renamed after qualification"
+		terminal.save(ignore_permissions=True)
+
+		self.assertEqual(terminal.terminal_label, "Renamed after qualification")
+
 	def test_extra_profiles_do_not_widen_manager_doctype_reads(self):
 		# Frappe applies the POS Profile User Permission to the terminal's own
 		# pos_profile Link field, so an extra row cannot grant a Manager a read on
@@ -400,6 +471,23 @@ def _second_pos_profile():
 	return profile.insert(ignore_permissions=True).name
 
 
+def _isolated_pos_profile():
+	"""A POS Profile no other terminal serves.
+
+	The site's own profiles already carry QUALIFIED terminals, so a test about
+	the one-terminal-per-outlet rule needs an outlet of its own to collide on.
+	The group tables are cleared because ERPNext refuses a copy that repeats an
+	Item Group, and this profile only ever has to exist, not sell anything.
+	"""
+	source = frappe.get_doc("POS Profile", _pos_profile())
+	profile = frappe.copy_doc(source)
+	profile.name = f"PDP Isolated Outlet {uuid.uuid4().hex[:8]}"
+	profile.set("applicable_for_users", [])
+	profile.set("item_groups", [])
+	profile.set("customer_groups", [])
+	return profile.insert(ignore_permissions=True).name
+
+
 def _new_terminal(terminal_id):
 	return frappe.get_doc(
 		{
@@ -410,6 +498,13 @@ def _new_terminal(terminal_id):
 			"pos_profile": _pos_profile(),
 		}
 	).insert(ignore_permissions=True)
+
+
+def _qualified_terminal(terminal_id, pos_profile):
+	terminal = _new_terminal(terminal_id)
+	terminal.pos_profile = pos_profile
+	terminal.qualification_status = "QUALIFIED"
+	return terminal.save(ignore_permissions=True)
 
 
 def _has_leading_index(fieldname):

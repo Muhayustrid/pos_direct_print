@@ -657,12 +657,23 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 		self.assertEqual(projection["terminal_id"], qualified)
 
 	def test_two_enabled_terminals_returns_oldest(self):
+		# Validation now refuses a second QUALIFIED terminal on one outlet, but
+		# rows that predate that rule are already in the database. The tie-break
+		# still has to be deterministic for them, so the collision is created
+		# behind validation on purpose.
 		older = _terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
-		_terminal(self.profile, qualification_status="QUALIFIED", transport="SPI")
+		_colliding_terminal(self.profile, transport="SPI")
 		frappe.db.set_value("POS Print Terminal", older, "creation", "2020-01-01 08:00:00")
 		with _user(self.operator):
 			projection = resolve_terminal_for_profile(COMPANY, self.profile)
 		self.assertEqual(projection["terminal_id"], older)
+
+	def test_second_qualified_terminal_on_one_outlet_is_refused(self):
+		# The rule that keeps the lookup above deterministic, stated at the source.
+		_terminal(self.profile, qualification_status="QUALIFIED")
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			_terminal(self.profile, qualification_status="QUALIFIED")
+		self.assertIn("already served by terminal", str(ctx.exception))
 
 	def test_out_of_company_scope_rejected(self):
 		# Company User Permission narrows scope to COMPANY, so a lookup for a
@@ -841,7 +852,11 @@ class TestInvoicePrintState(IntegrationTestCase):
 		# reprint — exactly what the button row must offer.
 		for status in ("UNCERTAIN", "FALLBACK_BROWSER"):
 			with self.subTest(status=status):
-				invoice = _terminal(self.profile, qualification_status="QUALIFIED")
+				# A terminal name doubles as the reference target here (see
+				# _reprint_job), so this row is a reference, not a printing
+				# terminal — it stays UNVERIFIED to leave the outlet's one
+				# QUALIFIED slot to self.terminal.
+				invoice = _terminal(self.profile)
 				_reprint_job(
 					requested_by=self.operator,
 					pos_profile=self.profile,
@@ -1015,3 +1030,15 @@ def _add_extra_profile(terminal, pos_profile):
 	doc.append("extra_pos_profiles", {"pos_profile": pos_profile})
 	doc.save(ignore_permissions=True)
 	return doc
+
+
+def _colliding_terminal(pos_profile, **overrides):
+	"""A second QUALIFIED terminal on an outlet that already has one.
+
+	Validation refuses this, so the row is inserted UNVERIFIED and promoted with
+	db_set — mirroring rows that predate the rule. Only for tests that must prove
+	the resolution tie-break stays deterministic on legacy data.
+	"""
+	name = _terminal(pos_profile, **overrides)
+	frappe.db.set_value("POS Print Terminal", name, "qualification_status", "QUALIFIED")
+	return name

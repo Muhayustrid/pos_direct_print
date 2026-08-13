@@ -3,6 +3,8 @@ import json
 import frappe
 from frappe.model.document import Document
 
+from pos_direct_print.core import terminal_scope
+
 
 class POSPrintTerminal(Document):
 	def validate(self):
@@ -10,6 +12,7 @@ class POSPrintTerminal(Document):
 		self._check_capability_schema_version()
 		self._check_capabilities_json_is_json()
 		self._check_extra_profiles()
+		self._check_outlet_has_one_printing_terminal()
 
 	def _check_capability_schema_version(self):
 		if self.capability_schema_version is not None and self.capability_schema_version < 1:
@@ -65,6 +68,35 @@ class POSPrintTerminal(Document):
 		for index, row in enumerate(rows, start=1):
 			row.idx = index
 		self.set("extra_pos_profiles", rows)
+
+	def _check_outlet_has_one_printing_terminal(self):
+		"""One outlet may be served by one printing terminal, not two.
+
+		A terminal may serve several outlets, but the reverse must stay single:
+		terminal resolution asks only for Company + POS Profile, then takes the
+		oldest match. A second enabled QUALIFIED terminal on the same outlet
+		therefore loses that race in silence, and every Job it prints is recorded
+		against the other terminal — wrong device in the audit trail, and a
+		terminal_id in the idempotency key that does not match the printer.
+
+		Only enabled QUALIFIED terminals collide. An UNVERIFIED or disabled
+		terminal can never win the lookup, so it is free to overlap.
+		"""
+		if not self.enabled or self.qualification_status != "QUALIFIED":
+			return
+
+		for pos_profile in terminal_scope.served_pos_profiles(self):
+			for other in terminal_scope.terminal_names_serving(
+				pos_profile, company=self.company, qualified=True
+			):
+				if other == self.name:
+					continue
+				frappe.throw(
+					f"{pos_profile} is already served by terminal {other}."
+					" One outlet may have one printing terminal:"
+					" disable that terminal, or move this one to another outlet.",
+					frappe.ValidationError,
+				)
 
 
 def on_doctype_update():
