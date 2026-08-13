@@ -10,7 +10,7 @@
  ],
  "fields": [
   {
-   "columns": 1,
+   "columns": 8,
    "fieldname": "pos_profile",
    "fieldtype": "Link",
    "in_list_view": 1,

@@ -151,6 +151,14 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 		)
 		self.assertEqual([row.COLUMN_NAME for row in rows], ["pos_profile", "parent"])
 
+	def test_extra_profile_grid_column_is_wide_enough_to_read(self):
+		# Frappe's grid defaults a Link column to 2 of 12 units, which truncated the
+		# POS Profile name to "Outlet ..." in the only column the table has. The
+		# table shows one field, so that field gets the room.
+		field = frappe.get_meta("POS Print Terminal Profile").get_field("pos_profile")
+		self.assertEqual(field.columns, 8)
+		self.assertEqual(field.in_list_view, 1)
+
 	def test_extra_profiles_widen_what_the_terminal_serves(self):
 		# One counter, two outlets, one printer: the second outlet is an extra row
 		# rather than a second terminal.
