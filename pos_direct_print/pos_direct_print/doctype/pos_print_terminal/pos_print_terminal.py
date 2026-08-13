@@ -33,7 +33,13 @@ class POSPrintTerminal(Document):
 
 		A duplicate row is only noise, but a row from another Company would let a
 		print cross a Company boundary that every scope check treats as final.
+
+		Blank rows are dropped instead of refused. The table is optional, so a row
+		left empty — or emptied to undo it — means the operator wants no extra
+		outlet, not a mandatory-field error they cannot clear from the grid.
 		"""
+		self._drop_blank_extra_profiles()
+
 		seen = set()
 		for row in self.get("extra_pos_profiles") or []:
 			if row.pos_profile == self.pos_profile:
@@ -51,6 +57,14 @@ class POSPrintTerminal(Document):
 					f"{row.pos_profile} belongs to {company}, not {self.company}.",
 					frappe.ValidationError,
 				)
+
+	def _drop_blank_extra_profiles(self):
+		rows = [row for row in (self.get("extra_pos_profiles") or []) if row.pos_profile]
+		if len(rows) == len(self.get("extra_pos_profiles") or []):
+			return
+		for index, row in enumerate(rows, start=1):
+			row.idx = index
+		self.set("extra_pos_profiles", rows)
 
 
 def on_doctype_update():

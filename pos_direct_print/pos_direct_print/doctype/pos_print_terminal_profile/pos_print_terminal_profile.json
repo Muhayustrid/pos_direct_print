@@ -1,7 +1,7 @@
 {
  "actions": [],
  "creation": "2026-08-13 00:00:00.000000",
- "description": "One extra POS Profile served by the same physical terminal, beyond the terminal's default POS Profile.",
+ "description": "One extra POS Profile served by the same physical terminal, beyond the terminal's default POS Profile. Optional: a terminal that serves only its default outlet has no rows here.",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
@@ -10,13 +10,12 @@
  ],
  "fields": [
   {
-   "columns": 1,
+   "columns": 8,
    "fieldname": "pos_profile",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "POS Profile",
    "options": "POS Profile",
-   "reqd": 1,
    "search_index": 1
   }
  ],
