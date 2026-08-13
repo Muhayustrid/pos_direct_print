@@ -42,6 +42,51 @@ class TestAppIsolation(IntegrationTestCase):
 		)
 
 
+class TestDeskEntryPoint(IntegrationTestCase):
+	"""The module is reachable: one sidebar plus the Desktop Icon that names it.
+
+	`Workspace Sidebar` decides what the left nav holds. `Desktop Icon` is what
+	puts the module in the icon rail and in awesomebar results — the awesomebar
+	reads `boot.desktop_icons` only. A sidebar without its icon is invisible to
+	search, which is exactly how this app shipped before."""
+
+	def test_desktop_icon_points_at_the_sidebar(self):
+		icon = frappe.get_doc("Desktop Icon", "Direct Print")
+
+		self.assertEqual(icon.link_type, "Workspace Sidebar")
+		self.assertEqual(icon.link_to, "Direct Print")
+		self.assertEqual(icon.app, "pos_direct_print")
+		self.assertFalse(icon.hidden)
+		self.assertTrue(frappe.db.exists("Workspace Sidebar", icon.link_to))
+
+	def test_icon_parent_exists_or_the_icon_is_dropped_in_silence(self):
+		# get_desktop_icons keeps a child icon only while its parent survives the
+		# same permission pass, and drops it without a message otherwise. The
+		# parent is ERPNext, which `required_apps` makes a hard install dependency.
+		self.assertEqual(frappe.db.get_value("Desktop Icon", "Direct Print", "parent_icon"), "ERPNext")
+		self.assertTrue(frappe.db.exists("Desktop Icon", "ERPNext"))
+		self.assertEqual(pos_direct_print.hooks.required_apps, ["erpnext"])
+
+	def test_sidebar_groups_the_pos_doctypes_under_one_section(self):
+		sidebar = frappe.get_doc("Workspace Sidebar", "Direct Print")
+		labels = [item.label for item in sidebar.items]
+
+		self.assertEqual(
+			labels,
+			[
+				"POS Direct Print",
+				"POS Print Terminal",
+				"POS Print Job",
+				"POS Print Attempt",
+				"POS Print Settings",
+			],
+		)
+		section, *links = sidebar.items
+		self.assertEqual(section.type, "Section Break")
+		self.assertTrue(section.collapsible)
+		self.assertTrue(all(link.child for link in links))
+
+
 class TestDuplicateJobId(IntegrationTestCase):
 	"""A-AT-03 / A-DOD-02 — duplicate job_id is rejected at persistence."""
 
