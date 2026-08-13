@@ -1,0 +1,76 @@
+{
+ "app": "pos_direct_print",
+ "creation": "2026-08-13 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Workspace Sidebar",
+ "header_icon": "printer",
+ "idx": 0,
+ "items": [
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "printer",
+   "indent": 1,
+   "keep_closed": 0,
+   "label": "POS Direct Print",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "monitor",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "POS Print Terminal",
+   "link_to": "POS Print Terminal",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "list",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "POS Print Job",
+   "link_to": "POS Print Job",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "repeat",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "POS Print Attempt",
+   "link_to": "POS Print Attempt",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "setting",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "POS Print Settings",
+   "link_to": "POS Print Settings",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-08-13 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Direct Print",
+ "name": "Direct Print",
+ "owner": "Administrator",
+ "standard": 1,
+ "title": "Direct Print"
+}

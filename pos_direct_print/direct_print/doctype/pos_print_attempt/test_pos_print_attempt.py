@@ -80,7 +80,7 @@ class TestPOSPrintAttempt(IntegrationTestCase):
 
 		self.assertFalse(meta.issingle)
 		self.assertFalse(meta.is_submittable)
-		self.assertEqual(meta.module, "Pos Direct Print")
+		self.assertEqual(meta.module, "Direct Print")
 		self.assertEqual(meta.autoname, "field:attempt_id")
 
 	def test_has_exactly_twenty_five_fields_with_schema(self):

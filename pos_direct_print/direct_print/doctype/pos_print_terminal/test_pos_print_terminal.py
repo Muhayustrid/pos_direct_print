@@ -77,7 +77,7 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 
 		self.assertFalse(meta.issingle)
 		self.assertFalse(meta.is_submittable)
-		self.assertEqual(meta.module, "Pos Direct Print")
+		self.assertEqual(meta.module, "Direct Print")
 		self.assertEqual(meta.autoname, "field:terminal_id")
 
 	def test_field_schema_matches_spec(self):
