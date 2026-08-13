@@ -134,7 +134,8 @@ def invoice_print_state(reference_doctype, reference_name):
 	scope reads as not printed — there is no reprint you could perform on it
 	anyway. Returns a bare flag: no Job id, no terminal, nothing to correlate.
 	"""
-	return {"printed": bool(_reprintable_job_names(reference_doctype, reference_name))}
+	jobs = _reprintable_jobs(reference_doctype, reference_name)
+	return {"printed": bool(jobs) and _reprint_terminal_still_matches(jobs[0])}
 
 
 @frappe.whitelist()
@@ -172,7 +173,7 @@ def _latest_reprintable_job(reference_doctype, reference_name, user):
 	transport uses, so a Manager outside the Job's Company/POS Profile is
 	refused here rather than inside the reprint chain.
 	"""
-	names = _reprintable_job_names(reference_doctype, reference_name, scoped=False)
+	names = _reprintable_jobs(reference_doctype, reference_name, scoped=False)
 	if not names:
 		frappe.throw(
 			_("PDP_JOB_NOT_FOUND: no reprintable print job for {0} {1}.").format(
@@ -180,11 +181,12 @@ def _latest_reprintable_job(reference_doctype, reference_name, user):
 			),
 			exc=frappe.ValidationError,
 		)
-	return _scoped_job(names[0], user)
+	return _scoped_job(names[0].name, user)
 
 
-def _reprintable_job_names(reference_doctype, reference_name, scoped=True):
-	"""Newest-first Job names for an invoice in a state that permits a reprint.
+def _reprintable_jobs(reference_doctype, reference_name, scoped=True):
+	"""Newest-first reprintable Jobs for an invoice, with the fields the button
+	row needs to tell whether a reprint could actually run.
 
 	`scoped` runs the query through frappe.get_list so the standard permission
 	query conditions apply and out-of-scope rows drop out silently — note that
@@ -200,10 +202,25 @@ def _reprintable_job_names(reference_doctype, reference_name, scoped=True):
 			"reference_name": reference_name,
 			"status": ("in", reprint_service.REPRINTABLE_STATUSES),
 		},
-		pluck="name",
+		fields=["name", "terminal", "pos_profile"],
 		order_by="creation desc",
 		limit=1,
 	)
+
+
+def _reprint_terminal_still_matches(job):
+	"""Would a reprint of this Job survive the terminal guard in core.reprint?
+
+	A terminal can be reassigned to another POS Profile after a receipt printed.
+	The reprint chain then refuses the Job, because reprinting an outlet's
+	receipt on a terminal now serving a different outlet crosses that boundary.
+	Report such a Job as not printed so the row keeps Print Receipt instead of
+	offering a button whose only outcome is PDP_JOB_CONFLICT.
+	"""
+	terminal = frappe.db.get_value(
+		"POS Print Terminal", job.terminal, ["pos_profile", "enabled"], as_dict=True
+	)
+	return bool(terminal and terminal.enabled and terminal.pos_profile == job.pos_profile)
 
 
 @frappe.whitelist()

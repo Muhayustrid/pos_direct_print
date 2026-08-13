@@ -850,6 +850,21 @@ class TestInvoicePrintState(IntegrationTestCase):
 			payload = invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice)
 		self.assertEqual(list(payload), ["printed"])
 
+	def test_reassigned_terminal_reads_as_not_printed(self):
+		# The terminal that printed this receipt now serves another POS Profile,
+		# so core.reprint would refuse with PDP_JOB_CONFLICT. Reporting the
+		# invoice as printed would render a button whose only outcome is failure.
+		self._job("SUCCEEDED")
+		frappe.db.set_value("POS Print Terminal", self.terminal, "pos_profile", self.other_profile)
+		with _user(self.manager_a):
+			self.assertEqual(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice), {"printed": False})
+
+	def test_disabled_terminal_reads_as_not_printed(self):
+		self._job("SUCCEEDED")
+		frappe.db.set_value("POS Print Terminal", self.terminal, "enabled", 0)
+		with _user(self.manager_a):
+			self.assertEqual(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice), {"printed": False})
+
 
 def _reprint_job(requested_by, pos_profile, terminal, reference_name, **overrides):
 	suffix = uuid.uuid4().hex[:8]
