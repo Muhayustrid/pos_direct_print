@@ -675,6 +675,31 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 				resolve_terminal_for_profile(other_company, self.profile)
 		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
 
+	def test_terminal_serving_an_extra_profile_is_found(self):
+		# One counter, two outlets, one printer: the lookup for the extra outlet
+		# must land on the same terminal rather than report none.
+		extra = _pos_profile("PDP Resolve Extra", self.operator)
+		_user_permission(self.manager_a, "POS Profile", extra)
+		terminal = _terminal(self.profile, qualification_status="QUALIFIED", transport="SPI")
+		_add_extra_profile(terminal, extra)
+
+		with _user(self.manager_a):
+			projection = resolve_terminal_for_profile(COMPANY, extra)
+		self.assertEqual(projection["terminal_id"], terminal)
+
+	def test_extra_profile_on_an_unqualified_terminal_is_not_qualified(self):
+		# The extra binding widens what a terminal serves; it never bypasses
+		# qualification.
+		extra = _pos_profile("PDP Resolve Extra Unverified", self.operator)
+		_user_permission(self.manager_a, "POS Profile", extra)
+		terminal = _terminal(self.profile, qualification_status="UNVERIFIED")
+		_add_extra_profile(terminal, extra)
+
+		with _user(self.manager_a):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				resolve_terminal_for_profile(COMPANY, extra)
+		self.assertIn("PDP_TERMINAL_NOT_QUALIFIED", str(ctx.exception))
+
 
 class TestReprintInvoice(IntegrationTestCase):
 	"""reprint_invoice — the POS entry to an authorized second physical copy.
@@ -851,13 +876,26 @@ class TestInvoicePrintState(IntegrationTestCase):
 		self.assertEqual(list(payload), ["printed"])
 
 	def test_reassigned_terminal_reads_as_not_printed(self):
-		# The terminal that printed this receipt now serves another POS Profile,
-		# so core.reprint would refuse with PDP_JOB_CONFLICT. Reporting the
-		# invoice as printed would render a button whose only outcome is failure.
+		# The terminal that printed this receipt no longer serves the outlet, so
+		# core.reprint would refuse with PDP_JOB_CONFLICT. Reporting the invoice as
+		# printed would render a button whose only outcome is failure.
 		self._job("SUCCEEDED")
 		frappe.db.set_value("POS Print Terminal", self.terminal, "pos_profile", self.other_profile)
 		with _user(self.manager_a):
 			self.assertEqual(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice), {"printed": False})
+
+	def test_terminal_still_serving_the_outlet_as_an_extra_reads_as_printed(self):
+		# The default binding moved on, but the terminal still serves the Job's
+		# outlet through an extra row — so the reprint would succeed and the
+		# button belongs in the row.
+		self._job("SUCCEEDED")
+		terminal = frappe.get_doc("POS Print Terminal", self.terminal)
+		original_profile = terminal.pos_profile
+		terminal.pos_profile = self.other_profile
+		terminal.append("extra_pos_profiles", {"pos_profile": original_profile})
+		terminal.save(ignore_permissions=True)
+		with _user(self.manager_a):
+			self.assertEqual(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice), {"printed": True})
 
 	def test_disabled_terminal_reads_as_not_printed(self):
 		self._job("SUCCEEDED")
@@ -969,3 +1007,11 @@ def _terminal(pos_profile, **overrides):
 	}
 	fields.update(overrides)
 	return frappe.get_doc(fields).insert(ignore_permissions=True).name
+
+
+def _add_extra_profile(terminal, pos_profile):
+	"""Widen a terminal to serve one more outlet, the way the form does."""
+	doc = frappe.get_doc("POS Print Terminal", terminal)
+	doc.append("extra_pos_profiles", {"pos_profile": pos_profile})
+	doc.save(ignore_permissions=True)
+	return doc

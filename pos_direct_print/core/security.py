@@ -17,7 +17,11 @@ Scope rules (A.31.10-A.31.14, A.31.24, A.31.25):
   intersected with company access. Absence of a POS Profile User Permission
   means ZERO outlet scope, never unrestricted (fail-closed, A.31.24).
 - Attempts inherit their parent Job scope; Terminal reads follow the manager's
-  POS Profile scope.
+  POS Profile scope. A terminal that serves extra outlets is still scoped by its
+  own `pos_profile` field: Frappe applies the POS Profile User Permission to
+  that Link field directly, so no hook can widen what a Manager sees. Terminal
+  administration is System Manager work (A.31.5), and printing scope is decided
+  in core.terminal_scope, not here.
 - System Manager / Administrator: unrestricted.
 """
 
@@ -142,6 +146,11 @@ def get_terminal_query_conditions(user):
 	if scopes["unrestricted"]:
 		return ""
 	if scopes["manager"] and scopes["profiles"]:
+		# Scope follows the terminal's own POS Profile field, not the extra
+		# profiles it may also print for: Frappe applies the POS Profile User
+		# Permission to that Link field itself, so a widened condition here could
+		# not grant more than the built-in filter allows. Terminal administration
+		# belongs to System Manager anyway (A.31.5).
 		clause = f"pos_profile IN {_sql_values(scopes['profiles'])}"
 		if scopes["companies"]:
 			clause += f" AND company IN {_sql_values(scopes['companies'])}"

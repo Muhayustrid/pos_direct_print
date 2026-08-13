@@ -13,6 +13,7 @@ import uuid
 import frappe
 from frappe import _
 
+from pos_direct_print.core import terminal_scope
 from pos_direct_print.core.security import (
 	MANAGER_ROLE,
 	SYSTEM_MANAGER_ROLE,
@@ -108,9 +109,9 @@ def _resolve_scoped_terminal(terminal, user, parent):
 			exc=frappe.ValidationError,
 		)
 
-	if target.pos_profile != parent.pos_profile:
+	if not terminal_scope.serves_pos_profile(target, parent.pos_profile):
 		frappe.throw(
-			_("PDP_JOB_CONFLICT: terminal {0} does not belong to the parent Job POS Profile.").format(
+			_("PDP_JOB_CONFLICT: terminal {0} does not serve the parent Job POS Profile.").format(
 				target.name
 			),
 			exc=frappe.ValidationError,
@@ -123,7 +124,10 @@ def _resolve_scoped_terminal(terminal, user, parent):
 				_("PDP_PERMISSION_DENIED: terminal is outside your authorized companies."),
 				exc=frappe.PermissionError,
 			)
-		if not scopes["profiles"] or target.pos_profile not in scopes["profiles"]:
+		# The reprint runs for the parent Job's outlet, so that is the outlet the
+		# user must be authorized for — not whichever outlet the terminal
+		# defaults to.
+		if not scopes["profiles"] or parent.pos_profile not in scopes["profiles"]:
 			frappe.throw(
 				_("PDP_PERMISSION_DENIED: terminal is outside your authorized POS Profile scope."),
 				exc=frappe.PermissionError,

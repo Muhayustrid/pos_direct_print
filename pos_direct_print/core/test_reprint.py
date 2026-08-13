@@ -94,6 +94,30 @@ class TestReprintAuthorization(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				request_reprint(self.completed_job.name, "Reason", terminal=other_terminal)
 
+	def test_terminal_serving_the_outlet_as_an_extra_is_accepted(self):
+		# A shared counter whose default binding is Outlet B but which also serves
+		# Outlet A may reprint an Outlet A receipt: it is the same physical printer
+		# the outlet legitimately uses.
+		shared = frappe.get_doc("POS Print Terminal", _terminal(OUTLET_B))
+		shared.append("extra_pos_profiles", {"pos_profile": OUTLET_A})
+		shared.save(ignore_permissions=True)
+
+		with _user(self.manager_a):
+			result = request_reprint(self.completed_job.name, "Shared counter", terminal=shared.name)
+
+		reprint = frappe.get_doc("POS Print Job", result["job_id"])
+		self.assertEqual(reprint.terminal, shared.name)
+		# The reprint stays on the parent's outlet, never the terminal's default.
+		self.assertEqual(reprint.pos_profile, OUTLET_A)
+
+	def test_disabled_terminal_denied(self):
+		disabled = _terminal(OUTLET_A)
+		frappe.db.set_value("POS Print Terminal", disabled, "enabled", 0)
+		with _user(self.manager_a):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				request_reprint(self.completed_job.name, "Reason", terminal=disabled)
+		self.assertIn("PDP_TERMINAL_DISABLED", str(ctx.exception))
+
 
 class _user:
 	def __init__(self, user):
