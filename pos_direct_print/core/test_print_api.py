@@ -11,6 +11,7 @@ from pos_direct_print.core.print_api import (
 	disable_terminals,
 	fallback_to_browser,
 	get_settings,
+	invoice_print_state,
 	re_reserve_job,
 	release_reservation,
 	reprint_invoice,
@@ -774,6 +775,80 @@ class TestReprintInvoice(IntegrationTestCase):
 		with _user(self.manager_a):
 			payload = reprint_invoice(REPRINT_REFERENCE_DOCTYPE, self.invoice, "Reason")
 		self.assertEqual(payload["parent_job_id"], newest.name)
+
+
+class TestInvoicePrintState(IntegrationTestCase):
+	"""invoice_print_state — the read-only flag the POS button row runs on.
+
+	A reopened order must offer Reprint before the cashier clicks anything, so
+	the row asks whether this invoice already reached paper. Row-scoped through
+	the standard Job query conditions, and deliberately bare: a flag only, no
+	Job id or terminal to correlate.
+	"""
+
+	def setUp(self):
+		self.operator = _user_with_role("printstate.op@example.test", "POS Print Operator")
+		self.manager_a = _user_with_role("printstate.mgr.a@example.test", "POS Print Manager")
+		self.manager_b = _user_with_role("printstate.mgr.b@example.test", "POS Print Manager")
+		self.profile = _pos_profile("PDP State Profile", self.operator)
+		self.other_profile = _pos_profile("PDP State Other", self.operator)
+		_user_permission(self.manager_a, "POS Profile", self.profile)
+		_user_permission(self.manager_b, "POS Profile", self.other_profile)
+		self.terminal = _terminal(self.profile, qualification_status="QUALIFIED")
+		self.invoice = self.terminal
+
+	def _job(self, status):
+		return _reprint_job(
+			requested_by=self.operator,
+			pos_profile=self.profile,
+			terminal=self.terminal,
+			reference_name=self.invoice,
+			status=status,
+		)
+
+	def test_settled_print_reads_as_printed(self):
+		self._job("SUCCEEDED")
+		with _user(self.manager_a):
+			self.assertEqual(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice), {"printed": True})
+
+	def test_uncertain_and_fallback_also_read_as_printed(self):
+		# Both mean paper may already carry the receipt, so another copy is a
+		# reprint — exactly what the button row must offer.
+		for status in ("UNCERTAIN", "FALLBACK_BROWSER"):
+			with self.subTest(status=status):
+				invoice = _terminal(self.profile, qualification_status="QUALIFIED")
+				_reprint_job(
+					requested_by=self.operator,
+					pos_profile=self.profile,
+					terminal=self.terminal,
+					reference_name=invoice,
+					status=status,
+				)
+				with _user(self.manager_a):
+					self.assertTrue(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, invoice)["printed"])
+
+	def test_failed_safe_reads_as_not_printed(self):
+		# Nothing reached paper, so Print Receipt must keep the slot.
+		self._job("FAILED_SAFE")
+		with _user(self.manager_a):
+			self.assertEqual(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice), {"printed": False})
+
+	def test_invoice_never_printed_reads_as_not_printed(self):
+		with _user(self.manager_a):
+			self.assertEqual(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice), {"printed": False})
+
+	def test_out_of_scope_job_reads_as_not_printed(self):
+		# Row scoping hides the Job, and that is the honest answer for this user:
+		# there is no reprint they could perform on it anyway.
+		self._job("SUCCEEDED")
+		with _user(self.manager_b):
+			self.assertEqual(invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice), {"printed": False})
+
+	def test_projection_exposes_nothing_but_the_flag(self):
+		self._job("SUCCEEDED")
+		with _user(self.manager_a):
+			payload = invoice_print_state(REPRINT_REFERENCE_DOCTYPE, self.invoice)
+		self.assertEqual(list(payload), ["printed"])
 
 
 def _reprint_job(requested_by, pos_profile, terminal, reference_name, **overrides):

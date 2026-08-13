@@ -14,6 +14,7 @@ export const OPERATIONS = Object.freeze({
   RESOLVE_TERMINAL: `${MODULE}.resolve_terminal`,
   RESOLVE_TERMINAL_FOR_PROFILE: `${MODULE}.resolve_terminal_for_profile`,
   RESERVE_PRINT_JOB: `${MODULE}.reserve_print_job`,
+  INVOICE_PRINT_STATE: `${MODULE}.invoice_print_state`,
   REPRINT_INVOICE: `${MODULE}.reprint_invoice`,
   RE_RESERVE_JOB: `${MODULE}.re_reserve_job`,
   START_ATTEMPT: `${MODULE}.start_attempt`,
@@ -32,6 +33,7 @@ const OPERATION_PHASES = Object.freeze({
   [OPERATIONS.RESOLVE_TERMINAL]: "RESERVATION",
   [OPERATIONS.RESOLVE_TERMINAL_FOR_PROFILE]: "RESERVATION",
   [OPERATIONS.RESERVE_PRINT_JOB]: "RESERVATION",
+  [OPERATIONS.INVOICE_PRINT_STATE]: "RESERVATION",
   [OPERATIONS.REPRINT_INVOICE]: "RESERVATION",
   [OPERATIONS.RE_RESERVE_JOB]: "RESERVATION",
   [OPERATIONS.START_ATTEMPT]: "PREFLIGHT",
@@ -71,6 +73,13 @@ export class PrintApi {
 
   reservePrintJob(payload) {
     return this._invoke(OPERATIONS.RESERVE_PRINT_JOB, payload);
+  }
+
+  invoicePrintState({ reference_doctype, reference_name }) {
+    return this._invoke(OPERATIONS.INVOICE_PRINT_STATE, {
+      reference_doctype,
+      reference_name,
+    });
   }
 
   reprintInvoice({ reference_doctype, reference_name, reason, terminal_id }) {

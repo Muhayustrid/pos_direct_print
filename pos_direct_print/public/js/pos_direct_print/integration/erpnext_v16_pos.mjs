@@ -43,6 +43,9 @@ export class POSIntegrationAdapter {
     this._terminal_cache = new Map();
     this.override_handle = null;
     this.reprint_handle = null;
+    // Pending button-row sync from the last render, exposed so callers can
+    // await the row settling (the render itself is synchronous).
+    this.slot_sync = undefined;
   }
 
   /**
@@ -130,9 +133,12 @@ export class POSIntegrationAdapter {
    * legal only as a REPRINT — a new Job, with an authorized requester and a
    * mandatory reason. This button is that path.
    *
-   * The button is rendered hidden and takes over the Print Receipt slot once a
-   * print settles with content possibly on paper, so the button row keeps its
-   * original layout: exactly one of the two is ever visible.
+   * The button is rendered hidden inside the Print Receipt slot and takes that
+   * slot over once the invoice is known to have reached paper — either from the
+   * print that just settled, or from the server when a past order is reopened.
+   * Exactly one of the two is ever visible, so the row keeps its original
+   * layout: Reprint / Email Receipt / Return for a printed order, Print Receipt
+   * / Email Receipt / Return for one that never printed.
    *
    * Renders only for POS Print Manager / System Manager: Operator has no
    * reprint authority (the server enforces this too — the hidden button is
@@ -158,7 +164,9 @@ export class POSIntegrationAdapter {
 
     prototype.add_summary_btns = function patched_add_summary_btns(map) {
       const result = original_add_summary_btns.call(this, map);
-      adapter._appendReprintButton(this, print_manager);
+      // The slot sync is async but the render is not; keep the promise so the
+      // adapter (and tests) can await the row settling.
+      adapter.slot_sync = adapter._appendReprintButton(this, print_manager);
       return result;
     };
 
@@ -218,12 +226,13 @@ export class POSIntegrationAdapter {
 
   _appendReprintButton(summary, print_manager) {
     const container = summary?.$summary_btns;
-    if (!container || typeof container.append !== "function") {
+    if (!container || typeof container.find !== "function") {
       return;
     }
     // The summary re-renders its buttons on every order; only add ours when the
     // current render actually offers printing.
-    if (!container.find(".print-btn").length) {
+    const print_btn = container.find(".print-btn");
+    if (!print_btn.length || typeof print_btn.before !== "function") {
       return;
     }
     if (container.find(".pdp-reprint-btn").length) {
@@ -231,8 +240,9 @@ export class POSIntegrationAdapter {
     }
 
     const label = _translate("Reprint");
-    // Hidden until a print settles with content possibly on paper: Reprint then
-    // takes over the Print Receipt slot, so the row keeps its original layout.
+    // Hidden, and inserted into the Print Receipt slot rather than appended
+    // after it: exactly one of the two is ever visible, so the row keeps its
+    // original width and the printed order reads Reprint / Email / Return.
     const button = _jquery(
       `<div class="summary-btn btn btn-default pdp-reprint-btn" style="display: none;">${label}</div>`
     );
@@ -245,7 +255,41 @@ export class POSIntegrationAdapter {
         adapter._showReprintError(error);
       });
     });
-    container.append(button);
+    print_btn.before(button);
+
+    // A reopened order was very likely printed already. Ask the server before
+    // the cashier clicks: Print Receipt there could only earn a conflict.
+    return this._syncSlotFromServer(summary);
+  }
+
+  /**
+   * Ask the server whether this invoice already reached paper and hand the slot
+   * to Reprint when it did. Runs on every render because each render builds
+   * fresh nodes. A failed or unavailable lookup leaves Print Receipt in place:
+   * the worst case is a conflict the cashier can recover from, whereas hiding
+   * Print Receipt on a guess would strand an unprinted order.
+   */
+  _syncSlotFromServer(summary) {
+    const doc = summary?.frm?.doc || summary?.doc;
+    const api = this._print_api;
+    if (!doc?.name || !api || typeof api.invoicePrintState !== "function") {
+      return undefined;
+    }
+    return Promise.resolve()
+      .then(() =>
+        api.invoicePrintState({
+          reference_doctype: doc.doctype,
+          reference_name: doc.name,
+        })
+      )
+      .then((state) => {
+        if (state?.printed) {
+          this._takeReprintSlot(summary);
+        }
+      })
+      .catch(() => {
+        // Deliberate no-op: see the note above on failing open.
+      });
   }
 
   /**
@@ -256,20 +300,25 @@ export class POSIntegrationAdapter {
    * nothing, so Print Receipt stays and the cashier can simply print again.
    */
   _syncReprintSlot(summary, outcome) {
+    if (_mayHavePrinted(outcome)) {
+      this._takeReprintSlot(summary);
+    }
+    return outcome;
+  }
+
+  /** Hide Print Receipt, reveal Reprint. Idempotent, and a no-op without both. */
+  _takeReprintSlot(summary) {
     const container = summary?.$summary_btns;
     if (!container || typeof container.find !== "function") {
-      return outcome;
+      return false;
     }
     const reprint_btn = container.find(".pdp-reprint-btn");
     if (!reprint_btn.length) {
-      return outcome;
-    }
-    if (!_mayHavePrinted(outcome)) {
-      return outcome;
+      return false;
     }
     _setVisible(container.find(".print-btn"), false);
     _setVisible(reprint_btn, true);
-    return outcome;
+    return true;
   }
 
   _promptReprintReason() {
