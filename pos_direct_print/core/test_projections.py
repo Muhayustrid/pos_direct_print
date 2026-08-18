@@ -13,6 +13,7 @@ from pos_direct_print.core.projections import (
 	runtime_settings_projection,
 	terminal_runtime_projection,
 )
+from pos_direct_print.tests.fixtures import test_company, test_outlet_a
 
 # Level 1 fields per A.31.6 / A.31.9 / A.31.17. No projection may expose these.
 TERMINAL_LEVEL1_FIELDS = {
@@ -250,13 +251,11 @@ def _permlevel1_roles(doctype):
 
 
 def _company():
-	return "PT. JUARA ROTI INDONESIA"
+	return test_company()
 
 
 def _pos_profile():
-	return frappe.db.get_value("POS Profile", {"company": _company()}, "name") or frappe.db.get_value(
-		"POS Profile", {}, "name"
-	)
+	return test_outlet_a()
 
 
 def _terminal():

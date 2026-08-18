@@ -4,10 +4,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from pos_direct_print.core.reprint import request_reprint
-
-COMPANY = "PT. JUARA ROTI INDONESIA"
-OUTLET_A = "yusuf"
-OUTLET_B = "POS Training"
+from pos_direct_print.tests.fixtures import test_company, test_outlet_a, test_outlet_b
 
 
 class TestReprintAuthorization(IntegrationTestCase):
@@ -15,17 +12,20 @@ class TestReprintAuthorization(IntegrationTestCase):
 	standard DocType Create path stays denied for every role."""
 
 	def setUp(self):
+		self.outlet_a = test_outlet_a()
+		self.outlet_b = test_outlet_b()
+
 		self.operator = _user_with_role("reprint.op@example.test", "POS Print Operator")
 		self.manager_a = _user_with_role("reprint.mgr.a@example.test", "POS Print Manager")
 		self.manager_b = _user_with_role("reprint.mgr.b@example.test", "POS Print Manager")
 		self.system_manager = _user_with_role("reprint.sysmgr@example.test", "System Manager")
 
-		_user_permission(self.manager_a, "POS Profile", OUTLET_A)
-		_user_permission(self.manager_b, "POS Profile", OUTLET_B)
+		_user_permission(self.manager_a, "POS Profile", self.outlet_a)
+		_user_permission(self.manager_b, "POS Profile", self.outlet_b)
 
 		self.completed_job = _job(
 			requested_by=self.operator,
-			pos_profile=OUTLET_A,
+			pos_profile=self.outlet_a,
 			status="SUCCEEDED",
 			reservation_owner="client-x",
 		)
@@ -75,7 +75,7 @@ class TestReprintAuthorization(IntegrationTestCase):
 	def test_non_reprintable_state_denied(self):
 		preflight_job = _job(
 			requested_by=self.operator,
-			pos_profile=OUTLET_A,
+			pos_profile=self.outlet_a,
 			status="PREFLIGHT",
 			reservation_owner="client-y",
 		)
@@ -89,7 +89,7 @@ class TestReprintAuthorization(IntegrationTestCase):
 		self.assertEqual(result["parent_job"], self.completed_job.name)
 
 	def test_terminal_outside_scope_denied(self):
-		other_terminal = _terminal(OUTLET_B)
+		other_terminal = _terminal(self.outlet_b)
 		with _user(self.manager_a):
 			with self.assertRaises(frappe.ValidationError):
 				request_reprint(self.completed_job.name, "Reason", terminal=other_terminal)
@@ -98,8 +98,8 @@ class TestReprintAuthorization(IntegrationTestCase):
 		# A shared counter whose default binding is Outlet B but which also serves
 		# Outlet A may reprint an Outlet A receipt: it is the same physical printer
 		# the outlet legitimately uses.
-		shared = frappe.get_doc("POS Print Terminal", _terminal(OUTLET_B))
-		shared.append("extra_pos_profiles", {"pos_profile": OUTLET_A})
+		shared = frappe.get_doc("POS Print Terminal", _terminal(self.outlet_b))
+		shared.append("extra_pos_profiles", {"pos_profile": self.outlet_a})
 		shared.save(ignore_permissions=True)
 
 		with _user(self.manager_a):
@@ -108,10 +108,10 @@ class TestReprintAuthorization(IntegrationTestCase):
 		reprint = frappe.get_doc("POS Print Job", result["job_id"])
 		self.assertEqual(reprint.terminal, shared.name)
 		# The reprint stays on the parent's outlet, never the terminal's default.
-		self.assertEqual(reprint.pos_profile, OUTLET_A)
+		self.assertEqual(reprint.pos_profile, self.outlet_a)
 
 	def test_disabled_terminal_denied(self):
-		disabled = _terminal(OUTLET_A)
+		disabled = _terminal(self.outlet_a)
 		frappe.db.set_value("POS Print Terminal", disabled, "enabled", 0)
 		with _user(self.manager_a):
 			with self.assertRaises(frappe.ValidationError) as ctx:
@@ -166,7 +166,7 @@ def _terminal(pos_profile):
 				"doctype": "POS Print Terminal",
 				"terminal_id": f"TERM-{suffix}",
 				"terminal_label": f"Terminal {suffix}",
-				"company": COMPANY,
+				"company": test_company(),
 				"pos_profile": pos_profile,
 			}
 		)
@@ -177,14 +177,15 @@ def _terminal(pos_profile):
 
 def _job(requested_by, pos_profile, **overrides):
 	suffix = uuid.uuid4().hex[:8]
+	company = test_company()
 	doc = frappe.get_doc(
 		{
 			"doctype": "POS Print Job",
 			"job_id": f"JOB-{suffix}",
 			"idempotency_key": f"idem-JOB-{suffix}",
 			"reference_doctype": "Company",
-			"reference_name": COMPANY,
-			"company": COMPANY,
+			"reference_name": company,
+			"company": company,
 			"pos_profile": pos_profile,
 			"terminal": _terminal(pos_profile),
 			"requested_by": requested_by,

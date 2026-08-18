@@ -5,9 +5,7 @@ from frappe.tests import IntegrationTestCase
 
 import pos_direct_print
 from pos_direct_print.core.retry import evaluate_auto_retry, perform_auto_retry
-
-COMPANY = "PT. JUARA ROTI INDONESIA"
-OUTLET_A = "yusuf"
+from pos_direct_print.tests.fixtures import test_company, test_outlet_a
 
 
 class TestAppIsolation(IntegrationTestCase):
@@ -199,15 +197,16 @@ class TestSafeRetryEvaluation(IntegrationTestCase):
 
 def _job(status="CREATED", job_id=None, reservation_owner=None):
 	suffix = uuid.uuid4().hex[:8]
+	company = test_company()
 	return frappe.get_doc(
 		{
 			"doctype": "POS Print Job",
 			"job_id": job_id or f"JOB-{suffix}",
 			"idempotency_key": f"idem-JOB-{suffix}",
 			"reference_doctype": "Company",
-			"reference_name": COMPANY,
-			"company": COMPANY,
-			"pos_profile": OUTLET_A,
+			"reference_name": company,
+			"company": company,
+			"pos_profile": test_outlet_a(),
 			"terminal": _terminal(),
 			"requested_by": "Administrator",
 			"source": "POS_AUTO",
@@ -226,8 +225,8 @@ def _terminal():
 				"doctype": "POS Print Terminal",
 				"terminal_id": f"TERM-{suffix}",
 				"terminal_label": f"Terminal {suffix}",
-				"company": COMPANY,
-				"pos_profile": OUTLET_A,
+				"company": test_company(),
+				"pos_profile": test_outlet_a(),
 			}
 		)
 		.insert(ignore_permissions=True)

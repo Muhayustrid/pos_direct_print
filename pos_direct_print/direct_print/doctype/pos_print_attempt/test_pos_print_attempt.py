@@ -4,8 +4,15 @@ import frappe
 from frappe.exceptions import DuplicateEntryError, UniqueValidationError
 from frappe.tests import IntegrationTestCase
 
+from pos_direct_print.tests.fixtures import test_company, test_outlet_a
+
 DOCTYPE = "POS Print Attempt"
 TABLE_NAME = "tabPOS Print Attempt"
+
+# Attempts reach Company transitively through POS Print Job. See the same
+# declaration in test_pos_print_terminal for why that dependency has to stay out
+# of the framework's path on a non-INR site.
+IGNORE_TEST_RECORD_DEPENDENCIES = ["Company", "POS Profile"]
 
 # fieldname -> (fieldtype, reqd, default, options)
 FIELD_SPECS = {
@@ -237,13 +244,11 @@ class TestPOSPrintAttempt(IntegrationTestCase):
 
 
 def _company():
-	return "PT. JUARA ROTI INDONESIA"
+	return test_company()
 
 
 def _pos_profile():
-	return frappe.db.get_value("POS Profile", {"company": _company()}, "name") or frappe.db.get_value(
-		"POS Profile", {}, "name"
-	)
+	return test_outlet_a()
 
 
 def _terminal():

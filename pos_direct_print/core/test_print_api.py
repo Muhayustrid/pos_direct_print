@@ -23,16 +23,21 @@ from pos_direct_print.core.print_api import (
 	transition_job,
 )
 from pos_direct_print.core.receipt_hash import hash_receipt
+from pos_direct_print.tests.fixtures import (
+	grant_profile_user,
+	isolated_pos_profile,
+	second_test_company,
+	test_company,
+	test_outlet_a,
+	test_outlet_b,
+)
 
-COMPANY = "PT. JUARA ROTI INDONESIA"
 # The endpoint treats reference_doctype/reference_name as an opaque pair, so the
 # reprint tests point them at the test's own Terminal instead of a real POS
 # Invoice: the Dynamic Link resolves, and each test gets a reference nobody else
 # shares. Reusing Company here would let jobs from other test classes surface as
 # reprintable parents.
 REPRINT_REFERENCE_DOCTYPE = "POS Print Terminal"
-OUTLET_A = "yusuf"
-OUTLET_B = "POS Training"
 
 
 def _receipt():
@@ -53,13 +58,15 @@ class TestPrintApiTransport(IntegrationTestCase):
 	projections out, canonical PDP errors on denial."""
 
 	def setUp(self):
+		self.outlet_a = test_outlet_a()
+		self.outlet_b = test_outlet_b()
 		self.operator = _user_with_role("api.op@example.test", "POS Print Operator")
 		self.manager_a = _user_with_role("api.mgr.a@example.test", "POS Print Manager")
-		_pos_profile_grant_user(OUTLET_A, self.operator)
-		_user_permission(self.manager_a, "POS Profile", OUTLET_A)
+		grant_profile_user(self.outlet_a, self.operator)
+		_user_permission(self.manager_a, "POS Profile", self.outlet_a)
 
-		self.terminal = _terminal(OUTLET_A)
-		self.terminal_b = _terminal(OUTLET_B)
+		self.terminal = _terminal(self.outlet_a)
+		self.terminal_b = _terminal(self.outlet_b)
 
 	def test_get_settings_exposes_runtime_fields_only(self):
 		with _user(self.operator):
@@ -100,14 +107,14 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			first = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=key,
 			)
 			second = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=key,
@@ -125,7 +132,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 			with self.assertRaises(frappe.PermissionError) as ctx:
 				reserve_print_job(
 					reference_doctype="Company",
-					reference_name=COMPANY,
+					reference_name=test_company(),
 					terminal_id=self.terminal,
 					requested_by="someone-else@example.test",
 					idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -137,7 +144,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 			with self.assertRaises(frappe.PermissionError):
 				reserve_print_job(
 					reference_doctype="Company",
-					reference_name=COMPANY,
+					reference_name=test_company(),
 					terminal_id=self.terminal,
 					requested_by=self.operator,
 					idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -161,7 +168,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -190,7 +197,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -212,7 +219,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -235,7 +242,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			fallback_reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -251,7 +258,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 
 			cancel_reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -263,7 +270,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -278,7 +285,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -296,7 +303,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -320,7 +327,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -336,7 +343,7 @@ class TestPrintApiTransport(IntegrationTestCase):
 		with _user(self.operator):
 			reservation = reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"api-idem-{uuid.uuid4().hex[:8]}",
@@ -350,15 +357,16 @@ class TestPrintApiTransport(IntegrationTestCase):
 class TestBindReceiptSnapshot(IntegrationTestCase):
 	def setUp(self):
 		self.operator = _user_with_role("bind.op@example.test", "POS Print Operator")
-		_pos_profile_grant_user(OUTLET_A, self.operator)
-		self.terminal = _terminal(OUTLET_A)
+		self.outlet_a = test_outlet_a()
+		grant_profile_user(self.outlet_a, self.operator)
+		self.terminal = _terminal(self.outlet_a)
 		self.snapshot = _receipt()
 
 	def _reserve(self):
 		with _user(self.operator):
 			return reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"bind-idem-{uuid.uuid4().hex[:8]}",
@@ -476,14 +484,15 @@ class TestReReserveJob(IntegrationTestCase):
 
 	def setUp(self):
 		self.operator = _user_with_role("rereserve.op@example.test", "POS Print Operator")
-		_pos_profile_grant_user(OUTLET_A, self.operator)
-		self.terminal = _terminal(OUTLET_A)
+		self.outlet_a = test_outlet_a()
+		grant_profile_user(self.outlet_a, self.operator)
+		self.terminal = _terminal(self.outlet_a)
 
 	def _reserve(self):
 		with _user(self.operator):
 			return reserve_print_job(
 				reference_doctype="Company",
-				reference_name=COMPANY,
+				reference_name=test_company(),
 				terminal_id=self.terminal,
 				requested_by=self.operator,
 				idempotency_key=f"rereserve-idem-{uuid.uuid4().hex[:8]}",
@@ -583,9 +592,10 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 		self.manager_a = _user_with_role("profile.mgr.a@example.test", "POS Print Manager")
 		self.manager_none = _user_with_role("profile.mgr.none@example.test", "POS Print Manager")
 		self.no_role = _user_with_role("profile.norole@example.test", "Sales User")
-		# Dedicated profile per test: the site's shared OUTLET_A carries legacy
-		# UNVERIFIED terminals that would win the creation-asc lookup.
-		self.profile = _pos_profile("PDP Resolve Profile", self.operator)
+		# Dedicated profile per test: the shared fixture outlet accumulates
+		# UNVERIFIED terminals across a class, and those would win the creation-asc
+		# lookup this class is about.
+		self.profile = _pos_profile(self.operator)
 		_user_permission(self.manager_a, "POS Profile", self.profile)
 
 	def test_operator_with_applicable_profile_gets_transport_projection(self):
@@ -597,7 +607,7 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 			driver_key="imin_v1",
 		)
 		with _user(self.operator):
-			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+			projection = resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertEqual(projection["terminal_id"], terminal)
 		self.assertEqual(projection["transport"], "USB")
 		self.assertEqual(projection["driver_key"], "imin_v1")
@@ -612,48 +622,48 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
 		with _user(other):
 			with self.assertRaises(frappe.PermissionError) as ctx:
-				resolve_terminal_for_profile(COMPANY, self.profile)
+				resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
 
 	def test_manager_without_pos_profile_scope_rejected(self):
 		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
 		with _user(self.manager_none):
 			with self.assertRaises(frappe.PermissionError) as ctx:
-				resolve_terminal_for_profile(COMPANY, self.profile)
+				resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
 
 	def test_manager_with_scope_gets_lookup(self):
 		terminal = _terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
 		with _user(self.manager_a):
-			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+			projection = resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertEqual(projection["terminal_id"], terminal)
 
 	def test_user_with_no_print_role_rejected(self):
 		_terminal(self.profile, qualification_status="QUALIFIED", transport="USB")
 		with _user(self.no_role):
 			with self.assertRaises(frappe.PermissionError) as ctx:
-				resolve_terminal_for_profile(COMPANY, self.profile)
+				resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
 
 	def test_no_enabled_terminal_raises_not_found(self):
 		_terminal(self.profile, qualification_status="QUALIFIED", enabled=0)
 		with _user(self.operator):
 			with self.assertRaises(frappe.ValidationError) as ctx:
-				resolve_terminal_for_profile(COMPANY, self.profile)
+				resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertIn("PDP_TERMINAL_NOT_FOUND", str(ctx.exception))
 
 	def test_enabled_unverified_terminal_raises_not_qualified(self):
 		_terminal(self.profile, qualification_status="UNVERIFIED", enabled=1)
 		with _user(self.operator):
 			with self.assertRaises(frappe.ValidationError) as ctx:
-				resolve_terminal_for_profile(COMPANY, self.profile)
+				resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertIn("PDP_TERMINAL_NOT_QUALIFIED", str(ctx.exception))
 
 	def test_qualified_terminal_wins_over_older_unverified_terminal(self):
 		_terminal(self.profile, qualification_status="UNVERIFIED", transport="UNKNOWN")
 		qualified = _terminal(self.profile, qualification_status="QUALIFIED", transport="SPI")
 		with _user(self.operator):
-			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+			projection = resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertEqual(projection["terminal_id"], qualified)
 
 	def test_two_enabled_terminals_returns_oldest(self):
@@ -665,7 +675,7 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 		_colliding_terminal(self.profile, transport="SPI")
 		frappe.db.set_value("POS Print Terminal", older, "creation", "2020-01-01 08:00:00")
 		with _user(self.operator):
-			projection = resolve_terminal_for_profile(COMPANY, self.profile)
+			projection = resolve_terminal_for_profile(test_company(), self.profile)
 		self.assertEqual(projection["terminal_id"], older)
 
 	def test_second_qualified_terminal_on_one_outlet_is_refused(self):
@@ -676,11 +686,13 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 		self.assertIn("already served by terminal", str(ctx.exception))
 
 	def test_out_of_company_scope_rejected(self):
-		# Company User Permission narrows scope to COMPANY, so a lookup for a
-		# different company is denied even though a terminal exists there.
-		other_company = "_Test Company"
+		# A Company User Permission narrows scope to the fixture Company, so a lookup
+		# for a different one is denied even though a terminal exists there. The other
+		# Company is a fixture rather than ERPNext's `_Test Company`, which only
+		# exists on sites where ERPNext's own test records have been generated.
+		other_company = second_test_company()
 		_terminal(self.profile, qualification_status="QUALIFIED", company=other_company)
-		_user_permission(self.operator, "Company", COMPANY)
+		_user_permission(self.operator, "Company", test_company())
 		with _user(self.operator):
 			with self.assertRaises(frappe.PermissionError) as ctx:
 				resolve_terminal_for_profile(other_company, self.profile)
@@ -689,26 +701,26 @@ class TestResolveTerminalForProfile(IntegrationTestCase):
 	def test_terminal_serving_an_extra_profile_is_found(self):
 		# One counter, two outlets, one printer: the lookup for the extra outlet
 		# must land on the same terminal rather than report none.
-		extra = _pos_profile("PDP Resolve Extra", self.operator)
+		extra = _pos_profile(self.operator)
 		_user_permission(self.manager_a, "POS Profile", extra)
 		terminal = _terminal(self.profile, qualification_status="QUALIFIED", transport="SPI")
 		_add_extra_profile(terminal, extra)
 
 		with _user(self.manager_a):
-			projection = resolve_terminal_for_profile(COMPANY, extra)
+			projection = resolve_terminal_for_profile(test_company(), extra)
 		self.assertEqual(projection["terminal_id"], terminal)
 
 	def test_extra_profile_on_an_unqualified_terminal_is_not_qualified(self):
 		# The extra binding widens what a terminal serves; it never bypasses
 		# qualification.
-		extra = _pos_profile("PDP Resolve Extra Unverified", self.operator)
+		extra = _pos_profile(self.operator)
 		_user_permission(self.manager_a, "POS Profile", extra)
 		terminal = _terminal(self.profile, qualification_status="UNVERIFIED")
 		_add_extra_profile(terminal, extra)
 
 		with _user(self.manager_a):
 			with self.assertRaises(frappe.ValidationError) as ctx:
-				resolve_terminal_for_profile(COMPANY, extra)
+				resolve_terminal_for_profile(test_company(), extra)
 		self.assertIn("PDP_TERMINAL_NOT_QUALIFIED", str(ctx.exception))
 
 
@@ -725,8 +737,8 @@ class TestReprintInvoice(IntegrationTestCase):
 		self.operator = _user_with_role("reprintapi.op@example.test", "POS Print Operator")
 		self.manager_a = _user_with_role("reprintapi.mgr.a@example.test", "POS Print Manager")
 		self.manager_b = _user_with_role("reprintapi.mgr.b@example.test", "POS Print Manager")
-		self.profile = _pos_profile("PDP Reprint Profile", self.operator)
-		self.other_profile = _pos_profile("PDP Reprint Other", self.operator)
+		self.profile = _pos_profile(self.operator)
+		self.other_profile = _pos_profile(self.operator)
 		_user_permission(self.manager_a, "POS Profile", self.profile)
 		_user_permission(self.manager_b, "POS Profile", self.other_profile)
 		self.terminal = _terminal(self.profile, qualification_status="QUALIFIED")
@@ -826,8 +838,8 @@ class TestInvoicePrintState(IntegrationTestCase):
 		self.operator = _user_with_role("printstate.op@example.test", "POS Print Operator")
 		self.manager_a = _user_with_role("printstate.mgr.a@example.test", "POS Print Manager")
 		self.manager_b = _user_with_role("printstate.mgr.b@example.test", "POS Print Manager")
-		self.profile = _pos_profile("PDP State Profile", self.operator)
-		self.other_profile = _pos_profile("PDP State Other", self.operator)
+		self.profile = _pos_profile(self.operator)
+		self.other_profile = _pos_profile(self.operator)
 		_user_permission(self.manager_a, "POS Profile", self.profile)
 		_user_permission(self.manager_b, "POS Profile", self.other_profile)
 		self.terminal = _terminal(self.profile, qualification_status="QUALIFIED")
@@ -931,7 +943,7 @@ def _reprint_job(requested_by, pos_profile, terminal, reference_name, **override
 			# convention in the Job DocType tests.
 			"reference_doctype": REPRINT_REFERENCE_DOCTYPE,
 			"reference_name": reference_name,
-			"company": COMPANY,
+			"company": test_company(),
 			"pos_profile": pos_profile,
 			"terminal": terminal,
 			"requested_by": requested_by,
@@ -990,25 +1002,10 @@ def _user_permission(user, allow, for_value):
 	).insert(ignore_permissions=True)
 
 
-def _pos_profile_grant_user(pos_profile, user):
-	profile = frappe.get_doc("POS Profile", pos_profile)
-	if user not in {row.user for row in profile.applicable_for_users}:
-		profile.append("applicable_for_users", {"user": user, "default": 0})
-		profile.save(ignore_permissions=True)
-
-
-def _pos_profile(name, user=None, *, company=COMPANY, disabled=0):
-	"""Fresh POS Profile copied from the site template, so lookups scoped to it
-	never collide with legacy terminals on the shared OUTLET_A profile."""
-	source = frappe.get_doc("POS Profile", OUTLET_A)
-	profile = frappe.copy_doc(source)
-	profile.name = f"{name}-{uuid.uuid4().hex[:8]}"
-	profile.company = company
-	profile.disabled = disabled
-	profile.set("applicable_for_users", [])
-	if user:
-		profile.append("applicable_for_users", {"user": user, "default": 0})
-	return profile.insert(ignore_permissions=True).name
+def _pos_profile(user=None, *, company=None, disabled=0):
+	"""An outlet of this test's own, so a lookup scoped to it never collides with
+	terminals another test put on the shared fixture outlet."""
+	return isolated_pos_profile(company=company, disabled=disabled, user=user or "")
 
 
 def _terminal(pos_profile, **overrides):
@@ -1017,7 +1014,7 @@ def _terminal(pos_profile, **overrides):
 		"doctype": "POS Print Terminal",
 		"terminal_id": f"TERM-{suffix}",
 		"terminal_label": f"Terminal {suffix}",
-		"company": COMPANY,
+		"company": test_company(),
 		"pos_profile": pos_profile,
 	}
 	fields.update(overrides)

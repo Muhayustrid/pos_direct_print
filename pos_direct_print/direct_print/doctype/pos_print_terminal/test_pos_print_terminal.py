@@ -5,9 +5,25 @@ from frappe.exceptions import DuplicateEntryError
 from frappe.tests import IntegrationTestCase
 
 from pos_direct_print.core import terminal_scope
+from pos_direct_print.tests.fixtures import (
+	foreign_outlet,
+	isolated_pos_profile,
+	test_company,
+	test_outlet_a,
+	test_outlet_b,
+)
 
 DOCTYPE = "POS Print Terminal"
 TABLE_NAME = "tabPOS Print Terminal"
+
+# The fixtures above build the Company and POS Profile these tests need, so the
+# framework must not also generate its own: resolving `Company` makes
+# `frappe.tests.utils.generators` import ERPNext's `test_company`, whose module
+# body runs `BootStrapTestData()` and re-inserts `Standard Buying` — which fails
+# outright on a site whose Price Lists are not in ERPNext's hardcoded INR
+# (`erpnext/tests/utils.py` `make_price_list`). Declaring the dependency away
+# keeps that upstream behaviour out of the path instead of patching ERPNext.
+IGNORE_TEST_RECORD_DEPENDENCIES = ["Company", "POS Profile"]
 
 # fieldname -> (fieldtype, reqd, default, options)
 FIELD_SPECS = {
@@ -224,12 +240,11 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 
 	def test_extra_profile_from_another_company_is_refused(self):
 		# Company is the outer boundary of every scope check, so an extra row must
-		# never be the way a print crosses it.
-		foreign = frappe.db.get_value("POS Profile", {"company": ("!=", _company())}, "name")
-		if not foreign:
-			self.skipTest("site has no POS Profile outside the test Company")
+		# never be the way a print crosses it. The foreign outlet is constructed
+		# rather than looked up, so the rule is judged on this site too — a lookup
+		# found nothing here and skipped the test instead of proving anything.
 		terminal = _new_terminal("TERM-MULTI-04")
-		terminal.append("extra_pos_profiles", {"pos_profile": foreign})
+		terminal.append("extra_pos_profiles", {"pos_profile": foreign_outlet()})
 
 		with self.assertRaises(frappe.ValidationError):
 			terminal.save(ignore_permissions=True)
@@ -450,42 +465,26 @@ class TestPOSPrintTerminal(IntegrationTestCase):
 
 
 def _company():
-	return "PT. JUARA ROTI INDONESIA"
+	return test_company()
 
 
 def _pos_profile():
-	return frappe.db.get_value("POS Profile", {"company": _company()}, "name") or frappe.db.get_value(
-		"POS Profile", {}, "name"
-	)
+	return test_outlet_a()
 
 
 def _second_pos_profile():
-	"""A different POS Profile in the same Company, created if the site lacks one."""
-	default = _pos_profile()
-	existing = frappe.db.get_value("POS Profile", {"company": _company(), "name": ("!=", default)}, "name")
-	if existing:
-		return existing
-	profile = frappe.copy_doc(frappe.get_doc("POS Profile", default))
-	profile.name = "PDP Terminal Second Outlet"
-	profile.set("applicable_for_users", [])
-	return profile.insert(ignore_permissions=True).name
+	"""A different POS Profile in the same Company."""
+	return test_outlet_b()
 
 
 def _isolated_pos_profile():
 	"""A POS Profile no other terminal serves.
 
-	The site's own profiles already carry QUALIFIED terminals, so a test about
-	the one-terminal-per-outlet rule needs an outlet of its own to collide on.
-	The group tables are cleared because ERPNext refuses a copy that repeats an
-	Item Group, and this profile only ever has to exist, not sell anything.
+	The shared outlet accumulates QUALIFIED terminals across a class, so a test
+	about the one-terminal-per-outlet rule needs an outlet of its own to collide
+	on.
 	"""
-	source = frappe.get_doc("POS Profile", _pos_profile())
-	profile = frappe.copy_doc(source)
-	profile.name = f"PDP Isolated Outlet {uuid.uuid4().hex[:8]}"
-	profile.set("applicable_for_users", [])
-	profile.set("item_groups", [])
-	profile.set("customer_groups", [])
-	return profile.insert(ignore_permissions=True).name
+	return isolated_pos_profile()
 
 
 def _new_terminal(terminal_id):

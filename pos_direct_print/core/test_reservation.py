@@ -13,9 +13,12 @@ from pos_direct_print.core.reservation import (
 	start_attempt,
 )
 from pos_direct_print.core.retry import perform_auto_retry
-
-COMPANY = "PT. JUARA ROTI INDONESIA"
-OUTLET_A = "yusuf"
+from pos_direct_print.tests.fixtures import (
+	isolated_pos_profile,
+	second_test_company,
+	test_company,
+	test_outlet_a,
+)
 
 
 class TestReservationContract(IntegrationTestCase):
@@ -67,14 +70,15 @@ class TestOriginalJobCreationScope(IntegrationTestCase):
 	def test_original_job_rejects_operator_outside_pos_profile(self):
 		operator = _user_with_role("pdp.creation.operator@example.test", "POS Print Operator")
 		other = _user_with_role("pdp.creation.other@example.test", "POS Print Operator")
-		profile = _pos_profile("PDP Creation Restricted", other)
+		profile = _pos_profile(other)
+		company = test_company()
 
 		with self.assertRaises(frappe.PermissionError) as ctx:
 			create_original_job(
 				idempotency_key=f"idem-{uuid.uuid4().hex}",
 				reference_doctype="Company",
-				reference_name=COMPANY,
-				company=COMPANY,
+				reference_name=company,
+				company=company,
 				pos_profile=profile,
 				terminal=_terminal(pos_profile=profile),
 				requested_by=operator,
@@ -83,13 +87,14 @@ class TestOriginalJobCreationScope(IntegrationTestCase):
 
 	def test_original_job_accepts_operator_inside_pos_profile(self):
 		operator = _user_with_role("pdp.creation.inside@example.test", "POS Print Operator")
-		profile = _pos_profile("PDP Creation Allowed", operator)
+		profile = _pos_profile(operator)
+		company = test_company()
 
 		job = create_original_job(
 			idempotency_key=f"idem-{uuid.uuid4().hex}",
 			reference_doctype="Company",
-			reference_name=COMPANY,
-			company=COMPANY,
+			reference_name=company,
+			company=company,
 			pos_profile=profile,
 			terminal=_terminal(pos_profile=profile),
 			requested_by=operator,
@@ -100,14 +105,15 @@ class TestOriginalJobCreationScope(IntegrationTestCase):
 	def test_original_job_rejects_disabled_pos_profile(self):
 		operator = _user_with_role("pdp.creation.disabled@example.test", "POS Print Operator")
 		# Operator is applicable, only the disabled flag fails the predicate.
-		profile = _pos_profile("PDP Creation Disabled", operator, disabled=1)
+		profile = _pos_profile(operator, disabled=1)
+		company = test_company()
 
 		with self.assertRaises(frappe.PermissionError) as ctx:
 			create_original_job(
 				idempotency_key=f"idem-{uuid.uuid4().hex}",
 				reference_doctype="Company",
-				reference_name=COMPANY,
-				company=COMPANY,
+				reference_name=company,
+				company=company,
 				pos_profile=profile,
 				terminal=_terminal(pos_profile=profile),
 				requested_by=operator,
@@ -116,36 +122,34 @@ class TestOriginalJobCreationScope(IntegrationTestCase):
 
 	def test_original_job_rejects_company_mismatch(self):
 		operator = _user_with_role("pdp.creation.company@example.test", "POS Print Operator")
-		# The profile lives in _Test Company (source keeps valid _Test links) and the
-		# Operator is applicable there; only the Job company differs, so the
-		# predicate's company match fails.
-		source = frappe.db.sql(
-			"SELECT name FROM `tabPOS Profile` "
-			"WHERE company = %s AND disabled = 0 AND warehouse IS NOT NULL LIMIT 1",
-			"_Test Company",
-		)[0][0]
-		profile = _pos_profile("PDP Creation Company", operator, company="_Test Company", source=source)
+		# The profile lives in the second fixture Company and the Operator is
+		# applicable there; only the Job company differs, so the predicate's company
+		# match is the single failing condition.
+		other_company = second_test_company()
+		profile = _pos_profile(operator, company=other_company)
+		company = test_company()
 
 		with self.assertRaises(frappe.PermissionError) as ctx:
 			create_original_job(
 				idempotency_key=f"idem-{uuid.uuid4().hex}",
 				reference_doctype="Company",
-				reference_name=COMPANY,
-				company=COMPANY,
+				reference_name=company,
+				company=company,
 				pos_profile=profile,
-				terminal=_terminal(pos_profile=profile),
+				terminal=_terminal(pos_profile=profile, company=other_company),
 				requested_by=operator,
 			)
 		self.assertIn("PDP_PERMISSION_DENIED", str(ctx.exception))
 
 	def test_original_job_skips_validation_for_non_operator(self):
 		# Non-Operator callers (e.g. Manager/System Manager paths) are unaffected.
+		company = test_company()
 		job = create_original_job(
 			idempotency_key=f"idem-{uuid.uuid4().hex}",
 			reference_doctype="Company",
-			reference_name=COMPANY,
-			company=COMPANY,
-			pos_profile="yusuf",
+			reference_name=company,
+			company=company,
+			pos_profile=test_outlet_a(),
 			terminal=_terminal(),
 			requested_by="Administrator",
 		)
@@ -158,6 +162,8 @@ class TestConcurrentReservation(IntegrationTestCase):
 
 	def test_concurrent_idempotent_creation_single_original_job(self):
 		key = f"idem-race-{uuid.uuid4().hex}"
+		company = test_company()
+		pos_profile = test_outlet_a()
 		terminal = _terminal()
 		frappe.db.commit()  # workers run on their own connections
 
@@ -165,9 +171,9 @@ class TestConcurrentReservation(IntegrationTestCase):
 			lambda i: create_original_job(
 				idempotency_key=key,
 				reference_doctype="Company",
-				reference_name=COMPANY,
-				company=COMPANY,
-				pos_profile=OUTLET_A,
+				reference_name=company,
+				company=company,
+				pos_profile=pos_profile,
 				terminal=terminal,
 				requested_by="Administrator",
 			).name,
@@ -332,7 +338,7 @@ def _attempt(job, terminal, **overrides):
 	return doc.insert(ignore_permissions=True)
 
 
-def _terminal(pos_profile=OUTLET_A):
+def _terminal(pos_profile=None, company=None):
 	suffix = uuid.uuid4().hex[:8]
 	return (
 		frappe.get_doc(
@@ -340,8 +346,8 @@ def _terminal(pos_profile=OUTLET_A):
 				"doctype": "POS Print Terminal",
 				"terminal_id": f"TERM-{suffix}",
 				"terminal_label": f"Terminal {suffix}",
-				"company": COMPANY,
-				"pos_profile": pos_profile,
+				"company": company or test_company(),
+				"pos_profile": pos_profile or test_outlet_a(),
 			}
 		)
 		.insert(ignore_permissions=True)
@@ -364,36 +370,28 @@ def _user_with_role(email, role):
 	return user.name
 
 
-def _pos_profile(name, user=None, *, company=COMPANY, disabled=0, source=OUTLET_A):
-	source = frappe.get_doc("POS Profile", source)
-	profile = frappe.copy_doc(source)
-	profile.name = f"{name}-{uuid.uuid4().hex[:8]}"
-	profile.company = company
-	profile.disabled = disabled
-	profile.set("applicable_for_users", [])
-	if user:
-		profile.append("applicable_for_users", {"user": user, "default": 0})
-	return profile.insert(ignore_permissions=True).name
+def _pos_profile(user=None, *, company=None, disabled=0):
+	"""An outlet of this test's own, optionally restricted to one Operator.
 
-
-def _pos_profile_grant_user(pos_profile, user):
-	profile = frappe.get_doc("POS Profile", pos_profile)
-	if user not in {row.user for row in profile.applicable_for_users}:
-		profile.append("applicable_for_users", {"user": user, "default": 0})
-		profile.save(ignore_permissions=True)
+	Each creation-scope test needs exactly one condition of the applicability
+	predicate to fail, so every profile is uniquely named and freshly built rather
+	than copied from whatever outlet the site happens to hold.
+	"""
+	return isolated_pos_profile(company=company, disabled=disabled, user=user or "")
 
 
 def _job(status="CREATED", reservation_owner=None):
 	suffix = uuid.uuid4().hex[:8]
+	company = test_company()
 	return frappe.get_doc(
 		{
 			"doctype": "POS Print Job",
 			"job_id": f"JOB-{suffix}",
 			"idempotency_key": f"idem-JOB-{suffix}",
 			"reference_doctype": "Company",
-			"reference_name": COMPANY,
-			"company": COMPANY,
-			"pos_profile": OUTLET_A,
+			"reference_name": company,
+			"company": company,
+			"pos_profile": test_outlet_a(),
 			"terminal": _terminal(),
 			"requested_by": "Administrator",
 			"source": "POS_AUTO",

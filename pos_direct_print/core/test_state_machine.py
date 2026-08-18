@@ -11,9 +11,7 @@ from pos_direct_print.core.state_machine import (
 	check_transition,
 	content_risk_retry_class,
 )
-
-COMPANY = "PT. JUARA ROTI INDONESIA"
-OUTLET_A = "yusuf"
+from pos_direct_print.tests.fixtures import test_company, test_outlet_a
 
 
 class TestValidTransitions(IntegrationTestCase):
@@ -133,8 +131,8 @@ def _terminal():
 				"doctype": "POS Print Terminal",
 				"terminal_id": f"TERM-{suffix}",
 				"terminal_label": f"Terminal {suffix}",
-				"company": COMPANY,
-				"pos_profile": OUTLET_A,
+				"company": test_company(),
+				"pos_profile": test_outlet_a(),
 			}
 		)
 		.insert(ignore_permissions=True)
@@ -144,15 +142,16 @@ def _terminal():
 
 def _job(status="CREATED", reservation_owner=None):
 	suffix = uuid.uuid4().hex[:8]
+	company = test_company()
 	return frappe.get_doc(
 		{
 			"doctype": "POS Print Job",
 			"job_id": f"JOB-{suffix}",
 			"idempotency_key": f"idem-JOB-{suffix}",
 			"reference_doctype": "Company",
-			"reference_name": COMPANY,
-			"company": COMPANY,
-			"pos_profile": OUTLET_A,
+			"reference_name": company,
+			"company": company,
+			"pos_profile": test_outlet_a(),
 			"terminal": _terminal(),
 			"requested_by": "Administrator",
 			"source": "POS_AUTO",

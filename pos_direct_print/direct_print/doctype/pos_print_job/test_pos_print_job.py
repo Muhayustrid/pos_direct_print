@@ -4,8 +4,22 @@ import frappe
 from frappe.exceptions import DuplicateEntryError
 from frappe.tests import IntegrationTestCase
 
+from pos_direct_print.tests.fixtures import test_company, test_outlet_a
+
 DOCTYPE = "POS Print Job"
 TABLE_NAME = "tabPOS Print Job"
+
+# See the same declaration in test_pos_print_terminal: the fixtures build Company
+# and POS Profile themselves, and letting the framework resolve `Company` pulls in
+# ERPNext's `test_company`, whose module body re-inserts `Standard Buying` and dies
+# on any site not using ERPNext's hardcoded INR Price Lists.
+#
+# `User` is on the list for that same reason at one remove. Frappe prunes only the
+# direct links of the module that declares the list, and the walk reaches Company
+# again through `requested_by` -> User -> Email Account -> Company. The suite fills
+# `requested_by` with Administrator and builds its own Users in `_create_user`, so
+# it never reads a generated User record either way.
+IGNORE_TEST_RECORD_DEPENDENCIES = ["Company", "POS Profile", "User"]
 
 # fieldname -> (fieldtype, reqd, default, options)
 FIELD_SPECS = {
@@ -320,13 +334,11 @@ class TestPOSPrintJob(IntegrationTestCase):
 
 
 def _company():
-	return "PT. JUARA ROTI INDONESIA"
+	return test_company()
 
 
 def _pos_profile():
-	return frappe.db.get_value("POS Profile", {"company": _company()}, "name") or frappe.db.get_value(
-		"POS Profile", {}, "name"
-	)
+	return test_outlet_a()
 
 
 def _terminal():
